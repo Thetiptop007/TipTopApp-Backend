@@ -172,10 +172,24 @@ const orderSchema = new mongoose.Schema(
       deliveredAt: Date,
     },
 
+    // Order Type
+    orderType: {
+      type: String,
+      enum: ['DELIVERY', 'TAKEAWAY'],
+      default: 'DELIVERY',
+    },
+
+    // Flag for admin-placed orders
+    placedBy: {
+      type: String,
+      enum: ['CUSTOMER', 'ADMIN'],
+      default: 'CUSTOMER',
+    },
+
     // Order Status & Timeline
     status: {
       type: String,
-      enum: ['PENDING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'],
+      enum: ['PENDING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'COMPLETED'],
       default: 'PENDING',
     },
 

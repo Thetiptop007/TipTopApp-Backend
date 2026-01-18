@@ -1,5 +1,6 @@
 const express = require('express');
 const orderController = require('../controllers/order.controller');
+const adminOrderController = require('../controllers/admin-order.controller');
 const authMiddleware = require('../middlewares/auth');
 const orderValidator = require('../validators/order.validator');
 
@@ -81,6 +82,20 @@ router.get(
 /**
  * Admin-specific order management routes
  */
+
+// Admin create order for walk-in customer
+router.post(
+  '/admin/create',
+  authMiddleware.restrictTo('admin'),
+  adminOrderController.createOrderForCustomer
+);
+
+// Complete takeaway order
+router.patch(
+  '/:id/complete-takeaway',
+  authMiddleware.restrictTo('admin'),
+  adminOrderController.completeTakeawayOrder
+);
 
 // Mark order as ready (admin only)
 router.patch(
