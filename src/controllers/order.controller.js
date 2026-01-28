@@ -142,6 +142,14 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     return orderItem;
   });
 
+  // Check minimum order amount
+  const minimumOrderAmount = settings.minimumOrderAmount || 0;
+  if (subtotal < minimumOrderAmount) {
+    return next(
+      new AppError(`Minimum order amount is ₹${minimumOrderAmount}. Your cart total is ₹${subtotal.toFixed(2)}`, 400)
+    );
+  }
+
   // Calculate delivery charges from settings
   const deliveryCharges = settings.deliveryCharge || 0;
 

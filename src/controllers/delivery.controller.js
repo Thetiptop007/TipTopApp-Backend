@@ -702,3 +702,159 @@ exports.getDeliveryStats = catchAsync(async (req, res, next) => {
     },
   });
 });
+
+/**
+ * Get all available (ready) orders for delivery agents
+ * GET /api/v1/delivery/available-orders
+ * Delivery agent only
+ */
+exports.getAvailableOrders = catchAsync(async (req, res, next) => {
+  logger.info(`
+================================
+===== GET AVAILABLE ORDERS =====
+================================
+🚚 Delivery Agent: ${req.user.email}
+🔍 Searching for: status=READY, orderType=DELIVERY, unassigned
+================================`);
+
+  try {
+    // Get all ready orders that are not assigned yet
+    const availableOrders = await Order.find({
+      status: 'READY',
+      orderType: 'DELIVERY',
+      'deliveryPartner.id': null,
+    })
+      .populate('customer.id', 'name phone email')
+      .sort({ createdAt: 1 }) // Older orders first
+      .lean(); // Convert to plain JavaScript objects
+
+    logger.info(`✅ Found ${availableOrders.length} available orders for delivery agents`);
+    
+    if (availableOrders.length > 0) {
+      logger.info(`📦 Available Order Numbers: ${availableOrders.map(o => o.orderNumber).join(', ')}`);
+    }
+
+    res.status(200).json({
+      status: 'success',
+      results: availableOrders.length,
+      data: {
+        orders: availableOrders,
+      },
+    });
+  } catch (error) {
+    logger.error(`❌ Error fetching available orders: ${error.message}`);
+    logger.error(`Stack: ${error.stack}`);
+    return next(new AppError('Error fetching available orders', 500));
+  }
+});
+
+/**
+ * Claim/Select an order (Delivery agent picks which order to deliver)
+ * POST /api/v1/delivery/claim-order/:orderId
+ * Delivery agent only
+ */
+exports.claimOrder = catchAsync(async (req, res, next) => {
+  const { orderId } = req.params;
+  const deliveryAgent = req.user;
+
+  // Check if delivery agent is available
+  if (!deliveryAgent.deliveryData.availability) {
+    logger.warn(`🚫 Agent ${deliveryAgent.email} tried to claim order but is not available`);
+    return next(new AppError('You must be available to claim orders', 400));
+  }
+
+  logger.info(`
+================================
+===== CLAIM ORDER REQUEST =====
+================================
+📦 Order ID: ${orderId}
+🚚 Delivery Agent: ${deliveryAgent.email}
+👤 Agent Name: ${deliveryAgent.name.first} ${deliveryAgent.name.last}
+📱 Agent Phone: ${deliveryAgent.phone.number}
+🏍️  Vehicle: ${deliveryAgent.deliveryData.vehicleInfo.number || 'N/A'}
+🔒 Using atomic operation to prevent race conditions
+================================`);
+
+  // Find the order with atomic operation to prevent race condition
+  let order;
+  try {
+    order = await Order.findOneAndUpdate(
+      {
+        _id: orderId,
+        status: 'READY',
+        orderType: 'DELIVERY',
+        'deliveryPartner.id': null, // Only claim if not already assigned
+      },
+      {
+        $set: {
+          status: 'OUT_FOR_DELIVERY',
+          'deliveryPartner.id': deliveryAgent._id,
+          'deliveryPartner.name': `${deliveryAgent.name.first} ${deliveryAgent.name.last}`,
+          'deliveryPartner.phone': deliveryAgent.phone.number,
+          'deliveryPartner.vehicleNumber': deliveryAgent.deliveryData.vehicleInfo.number || 'N/A',
+          'deliveryPartner.assignedAt': new Date(),
+          'deliveryPartner.pickedUpAt': new Date(),
+        },
+        $push: {
+          statusHistory: {
+            status: 'OUT_FOR_DELIVERY',
+            timestamp: new Date(),
+            updatedBy: deliveryAgent._id,
+            notes: `Order claimed by delivery agent ${deliveryAgent.name.first} and out for delivery`,
+          },
+        },
+      },
+      { new: true, runValidators: true }
+    );
+  } catch (updateError) {
+    logger.error(`❌ Error updating order: ${updateError.message}`);
+    logger.error(`Stack: ${updateError.stack}`);
+    return next(new AppError('Error claiming order', 500));
+  }
+
+  // If order is null, it means another agent claimed it or it's not available
+  if (!order) {
+    logger.warn(`⚠️  RACE CONDITION DETECTED! Order ${orderId} already claimed or not available`);
+    return next(new AppError('Order is no longer available or has already been claimed by another agent', 409));
+  }
+
+  logger.info(`✅ Order ${order.orderNumber} successfully claimed!`);
+  logger.info(`📋 Status: READY → OUT_FOR_DELIVERY`);
+
+  try {
+    logger.info(`📤 Emitting socket notification to customer: ${order.customer.id}`);
+    // Emit socket event to customer
+    const { emitUserNotification, emitOrderUpdate } = require('../utils/socket');
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_OUT_FOR_DELIVERY',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      deliveryAgent: {
+        name: order.deliveryPartner.name,
+        phone: order.deliveryPartner.phone,
+      },
+      message: 'Your order is on the way!',
+    });
+
+    logger.info(`📤 Emitting socket notification to all delivery agents (order no longer available)`);
+    // Notify other delivery agents that order is no longer available
+    emitOrderUpdate(order._id.toString(), {
+      type: 'ORDER_CLAIMED',
+      status: 'OUT_FOR_DELIVERY',
+      orderNumber: order.orderNumber,
+      message: 'Order has been claimed by another agent',
+    });
+  } catch (socketError) {
+    // Log socket errors but don't fail the request
+    logger.error(`⚠️  Socket notification error: ${socketError.message}`);
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order claimed successfully',
+    data: {
+      order,
+    },
+  });
+});
+

@@ -11,23 +11,67 @@ const { invalidateCache } = require('../middlewares/cache');
  * Public access
  */
 exports.getAllMenuItems = catchAsync(async (req, res, next) => {
-  // Build query
-  const features = new APIFeatures(MenuItem.find(), req.query)
+  console.log('🔍 Menu API called with query:', req.query);
+  
+  // First, get all matching items without pagination
+  const allFeatures = new APIFeatures(MenuItem.find(), req.query)
     .filter()
     .search()
     .sort()
-    .limitFields()
-    .paginate();
+    .limitFields();
 
-  // Execute query with pagination metadata
-  const result = await features.execute(MenuItem);
+  // Log the actual MongoDB query
+  console.log('🔎 MongoDB Query:', JSON.stringify(allFeatures.query.getQuery()));
+  console.log('🔎 MongoDB Options:', allFeatures.query.getOptions());
+
+  // Execute to get all matching items
+  const allItems = await allFeatures.query;
+  const totalResults = allItems.length;
+  
+  console.log(`📊 Menu items found: ${totalResults} items`);
+  if (totalResults > 0) {
+    console.log('📝 First item sample:', {
+      name: allItems[0].name,
+      isActive: allItems[0].isActive,
+      isAvailable: allItems[0].isAvailable,
+      categories: allItems[0].categories
+    });
+  } else {
+    // Check total count in database
+    const totalCount = await MenuItem.countDocuments();
+    console.log(`⚠️ Total items in database: ${totalCount}`);
+    if (totalCount > 0) {
+      const sampleItem = await MenuItem.findOne();
+      console.log('📝 Sample item from DB:', {
+        name: sampleItem?.name,
+        isActive: sampleItem?.isActive,
+        isAvailable: sampleItem?.isAvailable,
+        categories: sampleItem?.categories
+      });
+    }
+  }
+
+  // Now apply manual pagination
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 100;
+  const startIndex = (page - 1) * limit;
+  const endIndex = page * limit;
+
+  const paginatedItems = allItems.slice(startIndex, endIndex);
+  
+  console.log(`✅ Returning ${paginatedItems.length} paginated items (page ${page}, limit ${limit})`);
 
   res.status(200).json({
     status: 'success',
-    results: result.data.length,
-    pagination: result.pagination,
+    results: paginatedItems.length,
+    pagination: {
+      currentPage: page,
+      totalPages: Math.ceil(totalResults / limit),
+      totalResults: totalResults,
+      limit: limit
+    },
     data: {
-      menuItems: result.data,
+      menuItems: paginatedItems,
     },
   });
 });

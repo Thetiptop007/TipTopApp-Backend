@@ -77,7 +77,7 @@ const orderSchema = new mongoose.Schema(
       id: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true,
+        required: false, // Optional - admin orders may not have registered users
       },
       name: String,
       phone: String,
@@ -189,7 +189,7 @@ const orderSchema = new mongoose.Schema(
     // Order Status & Timeline
     status: {
       type: String,
-      enum: ['PENDING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'COMPLETED'],
+      enum: ['PENDING', 'ACCEPTED', 'READY', 'ASSIGNED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'COMPLETED'],
       default: 'PENDING',
     },
 

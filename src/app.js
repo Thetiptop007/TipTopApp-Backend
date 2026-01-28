@@ -117,6 +117,9 @@ const userRoutes = require('./routes/user.routes');
 const deliveryRoutes = require('./routes/delivery.routes');
 const settingsRoutes = require('./routes/settings.routes');
 const addressRoutes = require('./routes/address.routes');
+const dashboardRoutes = require('./routes/dashboard.routes');
+const adminOrderManagementRoutes = require('./routes/admin-order-management.routes');
+const adminMenuRoutes = require('./routes/admin-menu.routes');
 
 // Mount routes
 app.use('/api/v1/auth', authRoutes);
@@ -127,6 +130,9 @@ app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/delivery', deliveryRoutes);
 app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1/addresses', addressRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/admin/orders', adminOrderManagementRoutes);
+app.use('/api/v1/admin/menu-items', adminMenuRoutes);
 
 // Test route
 app.get('/api/v1/test', (req, res) => {

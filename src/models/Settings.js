@@ -54,12 +54,58 @@ const settingsSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    discountAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100,
+    },
+
+    // App Update Notification
+    appUpdateAvailable: {
+      type: Boolean,
+      default: false,
+    },
+    appUpdateMessage: {
+      type: String,
+      default: 'A new version of the app is available. Update now for the best experience!',
+    },
+    appUpdateUrl: {
+      type: String,
+      default: '',
+    },
 
     // Payment Configuration
     upiId: {
       type: String,
       default: '',
       trim: true,
+    },
+
+    // App Download Links
+    apkDownloadUrl: {
+      type: String,
+      default: 'https://drive.google.com/file/d/mock-apk-link/view',
+      trim: true,
+    },
+    indusAppStoreUrl: {
+      type: String,
+      default: 'https://indusappstore.com/app/thetiptop',
+      trim: true,
+    },
+
+    // Admin Personal Information
+    adminProfile: {
+      firstName: {
+        type: String,
+        default: '',
+        trim: true,
+      },
+      lastName: {
+        type: String,
+        default: '',
+        trim: true,
+      },
     },
 
     // Singleton pattern - only one settings document

@@ -5,7 +5,7 @@ const priceVariantSchema = new mongoose.Schema({
   quantity: {
     type: String,
     required: true,
-    enum: ['Quarter', 'Half', 'Full', '2PCS', '4PCS', '8PCS', '16PCS'],
+    enum: ['Quarter', 'Half', 'Full', '2PCS', '4PCS', '6PCS', '8PCS', '10PCS', '12PCS', '14PCS', '16PCS'],
   },
   price: {
     type: Number,
@@ -52,11 +52,17 @@ const menuItemSchema = new mongoose.Schema(
       },
     },
 
-    // Categories (from data.json)
+    // Categories (Single category stored as array for backward compatibility)
     categories: {
       type: [String],
       required: true,
-      default: ['All'],
+      validate: {
+        validator: function(v) {
+          // Must have exactly 1 category (not 'All')
+          return v && v.length === 1 && v[0] !== 'All';
+        },
+        message: 'Each menu item must have exactly one category (excluding "All")',
+      },
     },
 
     // Ratings

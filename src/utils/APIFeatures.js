@@ -18,7 +18,7 @@ class APIFeatures {
     const queryObj = { ...this.queryString };
 
     // Remove special fields that should not be used for filtering
-    const excludedFields = ['page', 'sort', 'limit', 'fields', 'search', 'fuzzy'];
+    const excludedFields = ['page', 'sort', 'limit', 'fields', 'search', 'fuzzy', '_t'];
     excludedFields.forEach((field) => delete queryObj[field]);
 
     // Handle category filter specially (map category to categories array)
@@ -46,6 +46,9 @@ class APIFeatures {
     if (this.queryString.search) {
       const searchTerm = this.queryString.search.trim().toLowerCase();
       
+      console.log('\n🔍 [SEARCH DEBUG] Search initiated');
+      console.log('   Original search term:', searchTerm);
+      
       // Store search term for relevance sorting later
       this._searchTerm = searchTerm;
       
@@ -61,6 +64,12 @@ class APIFeatures {
         'paner': 'paneer',
         'chiken': 'chicken',
         'chikken': 'chicken',
+        'chik': 'chicken',
+        'chec': 'chicken',
+        'chec': 'chicken',
+        'chickin': 'chicken',
+        'tand': 'tandoori',
+        'tandori': 'tandoori',
         'kadhai': 'kadai',
         'kadai': 'kadhai',
         'biriyani': 'biryani',
@@ -73,10 +82,14 @@ class APIFeatures {
       
       // Build search patterns - default fields for menu items
       const searchPatterns = [
-        // Menu item fields
+        // Exact and contains patterns
         { name: { $regex: simplePattern, $options: 'i' } },
         { description: { $regex: simplePattern, $options: 'i' } },
         { categories: { $regex: simplePattern, $options: 'i' } },
+        
+        // Word-start matching (matches "tand" in "Tandoori", "chik" in "Chicken")
+        { name: { $regex: `\\b${simplePattern}`, $options: 'i' } },
+        { description: { $regex: `\\b${simplePattern}`, $options: 'i' } },
         
         // User fields (nested)
         { 'name.first': { $regex: simplePattern, $options: 'i' } },
@@ -88,16 +101,23 @@ class APIFeatures {
       // Check for common typo corrections
       const correctedTerm = typoMappings[searchTerm];
       if (correctedTerm) {
+        console.log('   ✓ Typo correction applied:', searchTerm, '→', correctedTerm);
         const correctedPattern = correctedTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         searchPatterns.push(
+          // Exact and contains for corrected term
           { name: { $regex: correctedPattern, $options: 'i' } },
-          { description: { $regex: correctedPattern, $options: 'i' } }
+          { description: { $regex: correctedPattern, $options: 'i' } },
+          // Word-start for corrected term
+          { name: { $regex: `\\b${correctedPattern}`, $options: 'i' } },
+          { description: { $regex: `\\b${correctedPattern}`, $options: 'i' } }
         );
+      } else {
+        console.log('   ℹ No typo correction needed');
       }
       
       // Flexible pattern for typo tolerance (allows 1-2 character differences)
-      if (searchTerm.length >= 4) {
-        // Create pattern with optional characters between each letter
+      if (searchTerm.length >= 3) {
+        // Pattern 1: Allow optional characters between each letter (handles extra chars)
         const chars = searchTerm.split('');
         const flexiblePattern = chars
           .map((char, i) => {
@@ -116,6 +136,14 @@ class APIFeatures {
           { 'name.first': { $regex: flexiblePattern, $options: 'i' } },
           { 'name.last': { $regex: flexiblePattern, $options: 'i' } }
         );
+        
+        // Pattern 2: Allow optional characters at start (handles partial matches like "chik" -> "chicken")
+        // This creates patterns like "chik.{0,3}" which allows up to 3 more chars
+        const partialPattern = simplePattern + '.{0,5}';
+        searchPatterns.push(
+          { name: { $regex: `\\b${partialPattern}`, $options: 'i' } },
+          { description: { $regex: `\\b${partialPattern}`, $options: 'i' } }
+        );
       }
       
       // Word-by-word matching for multi-word queries
@@ -132,8 +160,11 @@ class APIFeatures {
       // Build search filter using $or
       const searchFilter = { $or: searchPatterns };
       
+      console.log('   Search patterns created:', searchPatterns.length);
+      
       // Merge conditions with existing query
       if (Object.keys(currentConditions).length > 0) {
+        console.log('   Merging with existing query conditions');
         if (currentConditions.$and) {
           currentConditions.$and.push(searchFilter);
           this.query.setQuery(currentConditions);
@@ -144,6 +175,7 @@ class APIFeatures {
           this.query.setQuery(mergedConditions);
         }
       } else {
+        console.log('   Using search filter as main query');
         this.query.setQuery(searchFilter);
       }
     }
@@ -224,12 +256,44 @@ class APIFeatures {
     
     // For search relevance, we need to get ALL matching documents before pagination
     if (this._searchTerm) {
+      console.log('\n📊 [RELEVANCE SCORING] Starting relevance calculation');
+      console.log('   Search term:', this._searchTerm);
+      
       // Clone the query without skip/limit for relevance sorting
       const queryWithoutPagination = this.query.model.find(this.query.getQuery());
       let allDocs = await queryWithoutPagination.select('-__v').exec();
       
+      console.log('   ✓ Found', allDocs.length, 'matching documents');
+      
       if (allDocs.length > 0) {
         const searchTerm = this._searchTerm.toLowerCase();
+        
+        // Typo mappings for relevance scoring (same as search patterns)
+        const typoMappings = {
+          'panir': 'paneer',
+          'paner': 'paneer',
+          'chiken': 'chicken',
+          'chikken': 'chicken',
+          'chik': 'chicken',
+          'chec': 'chicken',
+          'chickin': 'chicken',
+          'tand': 'tandoori',
+          'tandori': 'tandoori',
+          'kadhai': 'kadai',
+          'kadai': 'kadhai',
+          'biriyani': 'biryani',
+          'briyani': 'biryani',
+          'naan': 'nan',
+          'nan': 'naan',
+          'roti': 'rotti',
+          'rotti': 'roti',
+        };
+        
+        const correctedSearchTerm = typoMappings[searchTerm] || searchTerm;
+        
+        if (correctedSearchTerm !== searchTerm) {
+          console.log('   ✓ Using corrected term for scoring:', searchTerm, '→', correctedSearchTerm);
+        }
         
         allDocs = allDocs.map(doc => {
           const docObj = doc.toObject ? doc.toObject() : doc;
@@ -249,61 +313,99 @@ class APIFeatures {
           }
           
           const description = (docObj.description || '').toLowerCase();
+          const categories = (docObj.categories || []).map(c => c.toLowerCase());
           const email = (docObj.email?.address || '').toLowerCase();
           const phone = (docObj.phone?.number || '').toLowerCase();
           
           let relevanceScore = 0;
+          const nameWords = searchableText.split(/\s+/);
+          const descWords = description.split(/\s+/);
           
-          // Exact match in name (highest priority)
-          if (searchableText === searchTerm) {
-            relevanceScore = 1000;
-          }
-          // Exact match in email
-          else if (email === searchTerm) {
-            relevanceScore = 950;
+          // Helper function to check match with both original and corrected terms
+          const checkMatch = (text, checkFn) => {
+            return checkFn(text, searchTerm) || (correctedSearchTerm !== searchTerm && checkFn(text, correctedSearchTerm));
+          };
+          
+          // NAME MATCHES (10000-50000 points) - Heavily prioritized
+          // Exact match in name
+          if (searchableText === searchTerm || searchableText === correctedSearchTerm) {
+            relevanceScore = 50000;
           }
           // Starts with search term in name
-          else if (searchableText.startsWith(searchTerm)) {
-            relevanceScore = 900;
+          else if (searchableText.startsWith(searchTerm) || searchableText.startsWith(correctedSearchTerm)) {
+            relevanceScore = 40000;
           }
-          // Exact match in phone
-          else if (phone.includes(searchTerm)) {
-            relevanceScore = 850;
+          // Any word in name starts with search term (e.g., "tand" matches "Tandoori", "chik" matches "Chicken")
+          else if (nameWords.some(word => word.startsWith(searchTerm) || word.startsWith(correctedSearchTerm))) {
+            relevanceScore = 35000;
+            // Bonus if it's the first word
+            if (nameWords[0].startsWith(searchTerm) || nameWords[0].startsWith(correctedSearchTerm)) {
+              relevanceScore += 5000;
+            }
           }
-          // Exact word match in name (e.g., "chicken korma" matches "chicken")
-          else if (searchableText.split(/\s+/).includes(searchTerm)) {
-            relevanceScore = 800;
+          // Exact word match in name
+          else if (nameWords.includes(searchTerm) || nameWords.includes(correctedSearchTerm)) {
+            relevanceScore = 30000;
           }
-          // Contains search term in email
-          else if (email.includes(searchTerm)) {
-            relevanceScore = 750;
-          }
-          // Contains search term in name
-          else if (searchableText.includes(searchTerm)) {
-            // Higher score if match is closer to the start
+          // Contains search term anywhere in name
+          else if (searchableText.includes(searchTerm) || searchableText.includes(correctedSearchTerm)) {
             const position = searchableText.indexOf(searchTerm);
-            relevanceScore = 700 - (position * 2);
+            const correctedPosition = searchableText.indexOf(correctedSearchTerm);
+            const actualPosition = position >= 0 ? position : correctedPosition;
+            relevanceScore = 25000 - (actualPosition * 10);
           }
-          // Match in description
-          else if (description.includes(searchTerm)) {
-            relevanceScore = 300;
+          // Partial word match in name (word contains search term)
+          else if (nameWords.some(word => word.includes(searchTerm) || word.includes(correctedSearchTerm))) {
+            relevanceScore = 20000;
           }
-          // Fuzzy/partial matches
+          
+          // CATEGORY MATCHES (5000-8000 points)
+          else if (categories.some(cat => cat === searchTerm)) {
+            relevanceScore = 8000;
+          }
+          else if (categories.some(cat => cat.includes(searchTerm))) {
+            relevanceScore = 6000;
+          }
+          
+          // EMAIL/PHONE MATCHES (3000-5000 points)
+          else if (email === searchTerm) {
+            relevanceScore = 5000;
+          }
+          else if (phone.includes(searchTerm)) {
+            relevanceScore = 4000;
+          }
+          else if (email.includes(searchTerm)) {
+            relevanceScore = 3000;
+          }
+          
+          // DESCRIPTION MATCHES (500-2000 points) - Much lower priority
+          else if (descWords.some(word => word.startsWith(searchTerm) || word.startsWith(correctedSearchTerm))) {
+            relevanceScore = 2000;
+          }
+          else if (descWords.some(word => word === searchTerm || word === correctedSearchTerm)) {
+            relevanceScore = 1500;
+          }
+          else if (description.includes(searchTerm) || description.includes(correctedSearchTerm)) {
+            relevanceScore = 1000;
+          }
+          else if (descWords.some(word => word.includes(searchTerm) || word.includes(correctedSearchTerm))) {
+            relevanceScore = 500;
+          }
+          
+          // FUZZY MATCHES (100-200 points) - Lowest priority
           else {
             relevanceScore = 100;
           }
           
-          // Boost score based on rating and popularity (for MenuItems)
+          // Small boost for quality (max 100 points total - won't change ranking significantly)
           if (docObj.rating) {
-            relevanceScore += (docObj.rating || 0) * 10;
+            relevanceScore += (docObj.rating || 0) * 5; // max 25 points
           }
           if (docObj.reviews) {
-            relevanceScore += Math.min((docObj.reviews || 0), 50);
+            relevanceScore += Math.min((docObj.reviews || 0), 50); // max 50 points
           }
-          
-          // Boost score for active users
           if (docObj.isActive !== undefined && docObj.isActive) {
-            relevanceScore += 20;
+            relevanceScore += 10; // 10 points
           }
           
           return { doc, relevanceScore };
@@ -311,6 +413,16 @@ class APIFeatures {
         
         // Sort by relevance score (highest first)
         allDocs.sort((a, b) => b.relevanceScore - a.relevanceScore);
+        
+        // Log top 10 results with scores
+        console.log('\n   📋 Top results by relevance:');
+        allDocs.slice(0, 10).forEach((item, index) => {
+          const docObj = item.doc.toObject ? item.doc.toObject() : item.doc;
+          const name = docObj.name && typeof docObj.name === 'string' 
+            ? docObj.name 
+            : `${docObj.name?.first || ''} ${docObj.name?.last || ''}`.trim();
+          console.log(`   ${index + 1}. [${item.relevanceScore}] ${name}`);
+        });
         
         // Extract just the documents
         allDocs = allDocs.map(item => item.doc);
@@ -320,6 +432,9 @@ class APIFeatures {
         const docs = allDocs.slice(skip, skip + limit);
         const total = allDocs.length;
         const totalPages = Math.ceil(total / limit);
+        
+        console.log(`\n   ✓ Returning page ${page}/${totalPages} (${docs.length} items)`);
+        console.log('─────────────────────────────────────────\n');
         
         return {
           data: docs,

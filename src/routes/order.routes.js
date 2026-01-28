@@ -7,7 +7,17 @@ const orderValidator = require('../validators/order.validator');
 const router = express.Router();
 
 /**
- * All order routes require authentication
+ * Public routes - No authentication required
+ */
+
+// Guest order creation (no authentication)
+router.post(
+  '/guest/create',
+  adminOrderController.createGuestOrder
+);
+
+/**
+ * All order routes below require authentication
  */
 router.use(authMiddleware.protect);
 
@@ -97,9 +107,37 @@ router.patch(
   adminOrderController.completeTakeawayOrder
 );
 
-// Mark order as ready (admin only)
+// Admin accept order
+router.patch(
+  '/:id/accept',
+  authMiddleware.restrictTo('admin'),
+  adminOrderController.acceptOrder
+);
+
+// Admin mark order as preparing
+router.patch(
+  '/:id/preparing',
+  authMiddleware.restrictTo('admin'),
+  adminOrderController.markOrderPreparing
+);
+
+// Admin mark order as ready
 router.patch(
   '/:id/ready',
+  authMiddleware.restrictTo('admin'),
+  adminOrderController.markOrderReady
+);
+
+// Admin cancel order
+router.patch(
+  '/:id/cancel',
+  authMiddleware.restrictTo('admin'),
+  adminOrderController.cancelOrder
+);
+
+// Mark order as ready (admin only) - OLD ENDPOINT (keeping for backward compatibility)
+router.patch(
+  '/:id/mark-ready',
   authMiddleware.restrictTo('admin'),
   orderController.markOrderReady
 );

@@ -63,7 +63,7 @@ const userSchema = new mongoose.Schema(
       },
       isVerified: {
         type: Boolean,
-        default: false,
+        default: true,
       },
     },
     phone: {
@@ -74,7 +74,7 @@ const userSchema = new mongoose.Schema(
       },
       isVerified: {
         type: Boolean,
-        default: false,
+        default: true,
       },
       verificationCode: String,
       verificationExpires: Date,

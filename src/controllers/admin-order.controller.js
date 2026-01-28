@@ -242,4 +242,402 @@ exports.completeTakeawayOrder = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Accept order (Admin accepts pending order)
+ * PATCH /api/v1/admin/orders/:id/accept
+ * Admin only
+ */
+exports.acceptOrder = catchAsync(async (req, res, next) => {
+  logger.info('\n===== ACCEPT ORDER REQUEST =====');
+  logger.info(`📦 Order ID: ${req.params.id}`);
+  logger.info(`👤 Admin: ${req.user.email}`);
+
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    logger.error(`❌ Order not found: ${req.params.id}`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`📋 Order Number: ${order.orderNumber}`);
+  logger.info(`📊 Current Status: ${order.status}`);
+
+  if (order.status !== 'PENDING') {
+    logger.warn(`⚠️  Cannot accept - Order status is ${order.status}, expected PENDING`);
+    return next(new AppError('Only pending orders can be accepted', 400));
+  }
+
+  order.status = 'ACCEPTED';
+  order.statusHistory.push({
+    status: 'ACCEPTED',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: 'Order accepted by admin',
+  });
+
+  await order.save();
+
+  logger.info(`✅ Order ${order.orderNumber} status changed: PENDING → ACCEPTED`);
+
+  // Emit socket event to customer
+  emitUserNotification(order.customer.id.toString(), {
+    type: 'ORDER_ACCEPTED',
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    message: 'Your order has been accepted and is being prepared',
+  });
+
+  logger.info(`📤 Socket notification sent to customer: ${order.customer.id}`);
+  logger.info('================================\n');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order accepted successfully',
+    data: { order },
+  });
+});
+
+/**
+ * Mark order as preparing (Kitchen started preparing)
+ * PATCH /api/v1/admin/orders/:id/preparing
+ * Admin only
+ */
+exports.markOrderPreparing = catchAsync(async (req, res, next) => {
+  logger.info('\n===== MARK PREPARING REQUEST =====');
+  logger.info(`📦 Order ID: ${req.params.id}`);
+  logger.info(`👤 Admin: ${req.user.email}`);
+
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    logger.error(`❌ Order not found: ${req.params.id}`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`📋 Order Number: ${order.orderNumber}`);
+  logger.info(`📊 Current Status: ${order.status}`);
+
+  if (order.status !== 'ACCEPTED') {
+    logger.warn(`⚠️  Cannot mark preparing - Order status is ${order.status}, expected ACCEPTED`);
+    return next(new AppError('Only accepted orders can be marked as preparing', 400));
+  }
+
+  order.status = 'PREPARING';
+  order.statusHistory.push({
+    status: 'PREPARING',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: 'Kitchen started preparing the order',
+  });
+
+  await order.save();
+
+  logger.info(`✅ Order ${order.orderNumber} status changed: ACCEPTED → PREPARING`);
+
+  // Emit socket event to customer
+  emitUserNotification(order.customer.id.toString(), {
+    type: 'ORDER_PREPARING',
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    message: 'Your order is being prepared',
+  });
+
+  logger.info(`📤 Socket notification sent to customer`);
+  logger.info('================================\n');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order marked as preparing',
+    data: { order },
+  });
+});
+
+/**
+ * Mark order as ready (Order prepared, ready for delivery agent to claim)
+ * PATCH /api/v1/admin/orders/:id/ready
+ * Admin only
+ */
+exports.markOrderReady = catchAsync(async (req, res, next) => {
+  logger.info('\n===== MARK READY REQUEST =====');
+  logger.info(`📦 Order ID: ${req.params.id}`);
+  logger.info(`👤 Admin: ${req.user.email}`);
+
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    logger.error(`❌ Order not found: ${req.params.id}`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`📋 Order Number: ${order.orderNumber}`);
+  logger.info(`📊 Current Status: ${order.status}`);
+
+  if (order.status !== 'ACCEPTED') {
+    logger.warn(`⚠️  Cannot mark ready - Order status is ${order.status}, expected ACCEPTED`);
+    return next(new AppError('Only accepted orders can be marked as ready', 400));
+  }
+
+  order.status = 'READY';
+  order.statusHistory.push({
+    status: 'READY',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: 'Order prepared and ready for pickup by delivery agent',
+  });
+
+  await order.save();
+
+  logger.info(`✅ Order ${order.orderNumber} status changed: ACCEPTED → READY`);
+
+  // Emit socket event to customer
+  emitUserNotification(order.customer.id.toString(), {
+    type: 'ORDER_READY',
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    message: 'Your order is ready and will be picked up soon',
+  });
+
+  // Emit event to all delivery agents that a new order is available
+  emitOrderUpdate(order._id.toString(), {
+    type: 'ORDER_AVAILABLE',
+    status: 'READY',
+    orderNumber: order.orderNumber,
+    message: 'New order available for pickup',
+  });
+
+  logger.info(`📤 Socket notifications sent to customer and delivery agents`);
+  logger.info(`🚚 Order now available for delivery agents to claim`);
+  logger.info('================================\n');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order marked as ready',
+    data: { order },
+  });
+});
+
+/**
+ * Cancel order
+ * PATCH /api/v1/admin/orders/:id/cancel
+ * Admin only
+ */
+exports.cancelOrder = catchAsync(async (req, res, next) => {
+  const { reason } = req.body;
+  
+  logger.info(`
+================================
+===== CANCEL ORDER REQUEST =====
+================================
+📦 Order ID: ${req.params.id}
+👤 Admin: ${req.user.email}
+📝 Reason: ${reason || 'Not provided'}
+================================`);
+  
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    logger.error(`❌ Order not found: ${req.params.id}`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`📋 Current Status: ${order.status}`);
+  logger.info(`📋 Order Number: ${order.orderNumber}`);
+
+  if (['DELIVERED', 'COMPLETED', 'CANCELLED'].includes(order.status)) {
+    logger.warn(`⚠️  Cannot cancel order - already ${order.status}`);
+    return next(new AppError('Cannot cancel this order', 400));
+  }
+
+  order.status = 'CANCELLED';
+  order.statusHistory.push({
+    status: 'CANCELLED',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: reason || 'Order cancelled by admin',
+  });
+
+  await order.save();
+
+  logger.info(`✅ Order ${order.orderNumber} status changed: ${order.statusHistory[order.statusHistory.length - 2]?.status || 'UNKNOWN'} → CANCELLED`);
+  logger.info(`📤 Emitting socket notification to customer: ${order.customer.id}`);
+
+  // Emit socket event to customer
+  emitUserNotification(order.customer.id.toString(), {
+    type: 'ORDER_CANCELLED',
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    message: 'Your order has been cancelled',
+  });
+
+  // If order was assigned to delivery agent, notify them
+  if (order.deliveryPartner && order.deliveryPartner.id) {
+    logger.info(`📤 Emitting socket notification to delivery agent: ${order.deliveryPartner.id}`);
+    emitUserNotification(order.deliveryPartner.id.toString(), {
+      type: 'ORDER_CANCELLED',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Order has been cancelled',
+    });
+  }
+
+  logger.info('================================\n');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order cancelled successfully',
+    data: { order },
+  });
+});
+
+/**
+ * Create guest order (no authentication required)
+ * POST /api/v1/orders/guest/create
+ * Public
+ */
+exports.createGuestOrder = catchAsync(async (req, res, next) => {
+  const {
+    customer,
+    items,
+    orderType,
+    deliveryAddress,
+    paymentMethod = 'COD',
+  } = req.body;
+
+  // Validation
+  if (!customer || !customer.name || !customer.phone) {
+    return next(new AppError('Customer name and phone are required', 400));
+  }
+
+  if (!items || items.length === 0) {
+    return next(new AppError('Order must contain at least one item', 400));
+  }
+
+  if (orderType === 'DELIVERY' && !deliveryAddress) {
+    return next(new AppError('Delivery address is required for delivery orders', 400));
+  }
+
+  // Validate menu items
+  const menuItemIds = items.map((item) => item.menuItem);
+  const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
+
+  if (menuItems.length !== menuItemIds.length) {
+    return next(new AppError('Some menu items do not exist', 400));
+  }
+
+  // Check if all items are available
+  const unavailableItems = menuItems.filter(item => !item.isAvailable);
+  if (unavailableItems.length > 0) {
+    return next(new AppError(`Some menu items are not available: ${unavailableItems.map(i => i.name).join(', ')}`, 400));
+  }
+
+  // Get settings for tax and delivery charges
+  const settings = await Settings.getSettings();
+
+  // Create or find customer user
+  let customerUser = await User.findOne({ 'phone.number': customer.phone });
+
+  if (!customerUser) {
+    const nameParts = customer.name.trim().split(' ');
+    const firstName = nameParts[0] || 'Customer';
+    const lastName = nameParts.slice(1).join(' ') || 'Guest';
+    
+    const email = `${customer.phone}@guest.thetiptop.com`;
+    const randomPassword = Math.random().toString(36).slice(-10) + Math.random().toString(36).slice(-10);
+    
+    customerUser = await User.create({
+      name: {
+        first: firstName,
+        last: lastName,
+      },
+      phone: {
+        number: customer.phone,
+        isVerified: false,
+      },
+      email: {
+        address: email,
+        isVerified: true,
+      },
+      password: randomPassword,
+      role: 'customer',
+      isActive: true,
+    });
+    logger.info(`Created new guest customer: ${customer.name} (${customer.phone})`);
+  }
+
+  // Calculate pricing
+  let itemsTotal = 0;
+  const orderItems = items.map((item) => {
+    const menuItem = menuItems.find((mi) => mi._id.toString() === item.menuItem);
+    const portion = item.portion || 'Full';
+    
+    let price;
+    if (item.price) {
+      price = item.price;
+    } else {
+      const variant = menuItem.priceVariants?.find(v => v.quantity === portion);
+      price = variant?.price || menuItem.portions?.[portion] || menuItem.basePrice;
+    }
+
+    const itemTotal = price * item.quantity;
+    itemsTotal += itemTotal;
+
+    return {
+      menuItem: menuItem._id,
+      name: menuItem.name,
+      portion,
+      quantity: item.quantity,
+      price,
+      total: itemTotal,
+    };
+  });
+
+  // Calculate tax and delivery
+  const taxAmount = settings.taxRate ? (itemsTotal * settings.taxRate) / 100 : 0;
+  const deliveryCharge = orderType === 'DELIVERY' ? settings.deliveryCharge || 0 : 0;
+  const total = itemsTotal + taxAmount + deliveryCharge;
+
+  // Create order
+  const order = await Order.create({
+    customer: {
+      id: customerUser._id,
+      name: customer.name,
+      phone: customer.phone,
+    },
+    items: orderItems,
+    pricing: {
+      itemsTotal,
+      taxRate: settings.taxRate || 0,
+      taxAmount,
+      deliveryCharge,
+      total,
+    },
+    orderType,
+    deliveryAddress: orderType === 'DELIVERY' ? deliveryAddress : undefined,
+    paymentMethod,
+    paymentStatus: 'PENDING',
+    status: 'NEW',
+    statusHistory: [
+      {
+        status: 'NEW',
+        timestamp: new Date(),
+        notes: 'Guest order created',
+      },
+    ],
+  });
+
+  logger.info(`✅ Guest order created: ${order.orderNumber} for ${customer.name}`);
+
+  // Emit socket event for admin
+  emitOrderUpdate({
+    type: 'NEW_ORDER',
+    order: order,
+  });
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Order placed successfully',
+    data: { order },
+  });
+});
+
 module.exports = exports;

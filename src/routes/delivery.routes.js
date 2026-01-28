@@ -21,6 +21,20 @@ router.get(
   deliveryController.getMyStats
 );
 
+// Get available orders (ready for pickup)
+router.get(
+  '/available-orders',
+  authMiddleware.restrictTo('delivery'),
+  deliveryController.getAvailableOrders
+);
+
+// Claim/select an order to deliver
+router.post(
+  '/claim-order/:orderId',
+  authMiddleware.restrictTo('delivery'),
+  deliveryController.claimOrder
+);
+
 // Update availability
 router.patch(
   '/availability',

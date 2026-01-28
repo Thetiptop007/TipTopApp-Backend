@@ -48,9 +48,10 @@ categorySchema.statics.getAllWithCounts = async function() {
   const categories = await this.find().sort({ createdAt: -1 });
   
   // Get actual item counts from MenuItem collection
+  // Note: Menu items now use categories array field (single category stored as array)
   const categoriesWithCounts = await Promise.all(
     categories.map(async (category) => {
-      const count = await MenuItem.countDocuments({ 'category.main': category.name });
+      const count = await MenuItem.countDocuments({ categories: category.name });
       return {
         ...category.toObject(),
         itemCount: count,

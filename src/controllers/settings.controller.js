@@ -40,7 +40,14 @@ exports.updateSettings = catchAsync(async (req, res, next) => {
     minimumOrderAmount,
     taxRate,
     deliveryCharge,
+    discountAmount,
+    appUpdateAvailable,
+    appUpdateMessage,
+    appUpdateUrl,
     upiId,
+    apkDownloadUrl,
+    indusAppStoreUrl,
+    adminProfile,
   } = req.body;
 
   // Get the singleton settings document
@@ -56,7 +63,19 @@ exports.updateSettings = catchAsync(async (req, res, next) => {
   if (minimumOrderAmount !== undefined) settings.minimumOrderAmount = minimumOrderAmount;
   if (taxRate !== undefined) settings.taxRate = taxRate;
   if (deliveryCharge !== undefined) settings.deliveryCharge = deliveryCharge;
+  if (discountAmount !== undefined) settings.discountAmount = discountAmount;
+  if (appUpdateAvailable !== undefined) settings.appUpdateAvailable = appUpdateAvailable;
+  if (appUpdateMessage !== undefined) settings.appUpdateMessage = appUpdateMessage;
+  if (appUpdateUrl !== undefined) settings.appUpdateUrl = appUpdateUrl;
   if (upiId !== undefined) settings.upiId = upiId;
+  if (apkDownloadUrl !== undefined) settings.apkDownloadUrl = apkDownloadUrl;
+  if (indusAppStoreUrl !== undefined) settings.indusAppStoreUrl = indusAppStoreUrl;
+  
+  // Update admin profile
+  if (adminProfile !== undefined) {
+    if (adminProfile.firstName !== undefined) settings.adminProfile.firstName = adminProfile.firstName;
+    if (adminProfile.lastName !== undefined) settings.adminProfile.lastName = adminProfile.lastName;
+  }
 
   await settings.save();
 
