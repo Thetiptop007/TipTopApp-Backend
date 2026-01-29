@@ -58,7 +58,7 @@ const settingsSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
-      max: 100,
+      // Amount in rupees (₹), not percentage - only applied in mobile app
     },
 
     // App Update Notification

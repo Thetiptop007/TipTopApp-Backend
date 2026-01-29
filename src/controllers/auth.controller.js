@@ -989,3 +989,57 @@ exports.removeDeviceToken = catchAsync(async (req, res, next) => {
     message: 'Device token removed successfully',
   });
 });
+
+/**
+ * Change password for authenticated user (Admin)
+ * PUT /api/v1/auth/change-password
+ * Protected route - requires authentication
+ */
+exports.changePassword = catchAsync(async (req, res, next) => {
+  const { currentPassword, newPassword, confirmPassword } = req.body;
+
+  // 1) Validate input
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    return next(new AppError('Please provide current password, new password, and confirm password', 400));
+  }
+
+  if (newPassword !== confirmPassword) {
+    return next(new AppError('New password and confirm password do not match', 400));
+  }
+
+  if (newPassword.length < 6) {
+    return next(new AppError('New password must be at least 6 characters long', 400));
+  }
+
+  if (currentPassword === newPassword) {
+    return next(new AppError('New password must be different from current password', 400));
+  }
+
+  // 2) Get user with password field
+  const user = await User.findById(req.user._id).select('+password');
+
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  // 3) Check if current password is correct
+  const isPasswordCorrect = await user.comparePassword(currentPassword);
+
+  if (!isPasswordCorrect) {
+    logger.warn(`Failed password change attempt for user ${user.email.address} - incorrect current password`);
+    return next(new AppError('Current password is incorrect', 401));
+  }
+
+  // 4) Update password
+  user.password = newPassword;
+  await user.save();
+
+  logger.info(`Password changed successfully for user ${user.email.address}`);
+
+  // 5) Send success response
+  res.status(200).json({
+    status: 'success',
+    message: 'Password changed successfully',
+  });
+});
+

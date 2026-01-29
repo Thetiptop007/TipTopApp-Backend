@@ -37,19 +37,27 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
     return next(new AppError('Delivery address is required for delivery orders', 400));
   }
 
-  // Validate menu items
-  const menuItemIds = items.map((item) => item.menuItemId);
-  const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
+  // Separate regular menu items from custom items
+  const regularItems = items.filter(item => item.menuItemId !== 'custom');
+  const customItems = items.filter(item => item.menuItemId === 'custom');
 
-  // Check if all items exist
-  if (menuItems.length !== menuItemIds.length) {
-    return next(new AppError('Some menu items do not exist', 400));
-  }
+  // Validate regular menu items
+  const menuItemIds = regularItems.map((item) => item.menuItemId);
+  let menuItems = [];
+  
+  if (menuItemIds.length > 0) {
+    menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
 
-  // Check if all items are available
-  const unavailableItems = menuItems.filter(item => !item.isAvailable);
-  if (unavailableItems.length > 0) {
-    return next(new AppError(`Some menu items are not available: ${unavailableItems.map(i => i.name).join(', ')}`, 400));
+    // Check if all items exist
+    if (menuItems.length !== menuItemIds.length) {
+      return next(new AppError('Some menu items do not exist', 400));
+    }
+
+    // Check if all items are available
+    const unavailableItems = menuItems.filter(item => !item.isAvailable);
+    if (unavailableItems.length > 0) {
+      return next(new AppError(`Some menu items are not available: ${unavailableItems.map(i => i.name).join(', ')}`, 400));
+    }
   }
 
   // Get settings for tax and delivery charges
@@ -92,13 +100,18 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
 
   // Calculate pricing
   let itemsTotal = 0;
-  const orderItems = items.map((item) => {
+  const orderItems = [];
+  
+  // Process regular menu items
+  regularItems.forEach((item) => {
     const menuItem = menuItems.find((mi) => mi._id.toString() === item.menuItemId);
     const portion = item.portion || 'Full';
     
     // Try to find price from priceVariants first, then fall back to portions
     let price;
-    if (menuItem.priceVariants && menuItem.priceVariants.length > 0) {
+    if (item.price) {
+      price = item.price; // Use provided price if available
+    } else if (menuItem.priceVariants && menuItem.priceVariants.length > 0) {
       const variant = menuItem.priceVariants.find((v) => v.quantity === portion);
       price = variant?.price || menuItem.priceVariants[0]?.price || menuItem.basePrice || 0;
     } else if (menuItem.portions && menuItem.portions.length > 0) {
@@ -111,7 +124,7 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
     const subtotal = price * item.quantity;
     itemsTotal += subtotal;
 
-    return {
+    orderItems.push({
       menuItemId: menuItem._id,
       name: menuItem.name,
       image: menuItem.images?.[0] || menuItem.image,
@@ -121,7 +134,33 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
       quantity: item.quantity,
       customizations: item.customizations || [],
       subtotal,
-    };
+    });
+  });
+  
+  // Process custom items
+  customItems.forEach((item) => {
+    if (!item.name || !item.price) {
+      throw new AppError('Custom items must have name and price', 400);
+    }
+    
+    const price = parseFloat(item.price);
+    const subtotal = price * item.quantity;
+    itemsTotal += subtotal;
+
+    orderItems.push({
+      menuItemId: null, // No menu item reference for custom items
+      name: item.name,
+      image: '/images/product/custom-item.jpg',
+      description: 'Custom item',
+      portion: item.portion || 'Custom',
+      price,
+      quantity: item.quantity,
+      customizations: [],
+      subtotal,
+      isCustom: true
+    });
+    
+    logger.info(`Added custom item: ${item.name} @ ₹${price} x ${item.quantity}`);
   });
 
   // Calculate fees based on order type using settings from database
@@ -222,22 +261,32 @@ exports.completeTakeawayOrder = catchAsync(async (req, res, next) => {
     return next(new AppError('Order already completed', 400));
   }
 
-  order.status = 'COMPLETED';
+  order.status = 'DELIVERED';
   order.paymentStatus = 'PAID';
   order.statusHistory.push({
-    status: 'COMPLETED',
+    status: 'DELIVERED',
     timestamp: new Date(),
     updatedBy: req.user._id,
-    notes: 'Takeaway order completed - customer picked up',
+    notes: 'Takeaway order delivered - customer picked up order',
   });
 
   await order.save();
 
-  logger.info(`Takeaway order ${order.orderNumber} completed by admin`);
+  logger.info(`Takeaway order ${order.orderNumber} marked as delivered by admin`);
+
+  // Emit socket notification if customer exists
+  if (order.customer && order.customer.id) {
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_DELIVERED',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order has been delivered',
+    });
+  }
 
   res.status(200).json({
     status: 'success',
-    message: 'Takeaway order marked as completed',
+    message: 'Takeaway order marked as delivered',
     data: { order },
   });
 });
@@ -279,15 +328,19 @@ exports.acceptOrder = catchAsync(async (req, res, next) => {
 
   logger.info(`✅ Order ${order.orderNumber} status changed: PENDING → ACCEPTED`);
 
-  // Emit socket event to customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'ORDER_ACCEPTED',
-    orderId: order._id,
-    orderNumber: order.orderNumber,
-    message: 'Your order has been accepted and is being prepared',
-  });
+  // Emit socket event to customer (only if customer.id exists)
+  if (order.customer && order.customer.id) {
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_ACCEPTED',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order has been accepted and is being prepared',
+    });
+    logger.info(`📤 Socket notification sent to customer: ${order.customer.id}`);
+  } else {
+    logger.info(`📤 No customer ID - skipping socket notification (admin-created order)`);
+  }
 
-  logger.info(`📤 Socket notification sent to customer: ${order.customer.id}`);
   logger.info('================================\n');
 
   res.status(200).json({
@@ -334,15 +387,19 @@ exports.markOrderPreparing = catchAsync(async (req, res, next) => {
 
   logger.info(`✅ Order ${order.orderNumber} status changed: ACCEPTED → PREPARING`);
 
-  // Emit socket event to customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'ORDER_PREPARING',
-    orderId: order._id,
-    orderNumber: order.orderNumber,
-    message: 'Your order is being prepared',
-  });
+  // Emit socket event to customer (only if customer.id exists)
+  if (order.customer && order.customer.id) {
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_PREPARING',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order is being prepared',
+    });
+    logger.info(`📤 Socket notification sent to customer`);
+  } else {
+    logger.info(`📤 No customer ID - skipping socket notification`);
+  }
 
-  logger.info(`📤 Socket notification sent to customer`);
   logger.info('================================\n');
 
   res.status(200).json({
@@ -371,10 +428,47 @@ exports.markOrderReady = catchAsync(async (req, res, next) => {
 
   logger.info(`📋 Order Number: ${order.orderNumber}`);
   logger.info(`📊 Current Status: ${order.status}`);
+  logger.info(`📦 Order Type: ${order.orderType}`);
 
   if (order.status !== 'ACCEPTED') {
     logger.warn(`⚠️  Cannot mark ready - Order status is ${order.status}, expected ACCEPTED`);
     return next(new AppError('Only accepted orders can be marked as ready', 400));
+  }
+
+  // For TAKEAWAY orders, mark as READY_FOR_PICKUP instead of READY
+  if (order.orderType === 'TAKEAWAY') {
+    order.status = 'READY_FOR_PICKUP';
+    order.statusHistory.push({
+      status: 'READY_FOR_PICKUP',
+      timestamp: new Date(),
+      updatedBy: req.user._id,
+      notes: 'Takeaway order ready for customer pickup',
+    });
+
+    await order.save();
+
+    logger.info(`✅ Takeaway order ${order.orderNumber} status changed: ACCEPTED → READY_FOR_PICKUP`);
+
+    // Emit socket event to customer (only if customer.id exists)
+    if (order.customer && order.customer.id) {
+      emitUserNotification(order.customer.id.toString(), {
+        type: 'ORDER_READY_FOR_PICKUP',
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        message: 'Your order is ready for pickup',
+      });
+      logger.info(`📤 Socket notification sent to customer`);
+    } else {
+      logger.info(`📤 No customer ID - skipping socket notification`);
+    }
+
+    logger.info('================================\n');
+
+    return res.status(200).json({
+      status: 'success',
+      message: 'Takeaway order marked as ready for pickup',
+      data: { order },
+    });
   }
 
   order.status = 'READY';
@@ -389,13 +483,15 @@ exports.markOrderReady = catchAsync(async (req, res, next) => {
 
   logger.info(`✅ Order ${order.orderNumber} status changed: ACCEPTED → READY`);
 
-  // Emit socket event to customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'ORDER_READY',
-    orderId: order._id,
-    orderNumber: order.orderNumber,
-    message: 'Your order is ready and will be picked up soon',
-  });
+  // Emit socket event to customer (only if customer.id exists)
+  if (order.customer && order.customer.id) {
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_READY',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order is ready and will be picked up soon',
+    });
+  }
 
   // Emit event to all delivery agents that a new order is available
   emitOrderUpdate(order._id.toString(), {
@@ -459,15 +555,19 @@ exports.cancelOrder = catchAsync(async (req, res, next) => {
   await order.save();
 
   logger.info(`✅ Order ${order.orderNumber} status changed: ${order.statusHistory[order.statusHistory.length - 2]?.status || 'UNKNOWN'} → CANCELLED`);
-  logger.info(`📤 Emitting socket notification to customer: ${order.customer.id}`);
 
-  // Emit socket event to customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'ORDER_CANCELLED',
-    orderId: order._id,
-    orderNumber: order.orderNumber,
-    message: 'Your order has been cancelled',
-  });
+  // Emit socket event to customer (only if customer.id exists)
+  if (order.customer && order.customer.id) {
+    logger.info(`📤 Emitting socket notification to customer: ${order.customer.id}`);
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_CANCELLED',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order has been cancelled',
+    });
+  } else {
+    logger.info(`📤 No customer ID - skipping socket notification`);
+  }
 
   // If order was assigned to delivery agent, notify them
   if (order.deliveryPartner && order.deliveryPartner.id) {

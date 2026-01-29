@@ -20,7 +20,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
   endOfDay.setHours(23, 59, 59, 999);
 
   // Define active and inactive statuses (UPPERCASE to match DB)
-  const activeStatuses = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY', 'OUT_FOR_DELIVERY'];
+  const activeStatuses = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'];
   const inactiveStatuses = ['DELIVERED', 'CANCELLED', 'REJECTED'];
 
   // Fetch active orders WITH full details
@@ -28,7 +28,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
     createdAt: { $gte: startOfDay, $lte: endOfDay },
     status: { $in: activeStatuses }
   })
-    .select('orderNumber customer items pricing status createdAt deliveryAddress')
+    .select('orderNumber customer items pricing status orderType deliveryPartner createdAt deliveryAddress')
     .lean()
     .sort({ createdAt: -1 });
 
@@ -37,7 +37,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
     createdAt: { $gte: startOfDay, $lte: endOfDay },
     status: { $in: inactiveStatuses }
   })
-    .select('orderNumber customer.name customer.phone pricing.finalAmount status createdAt')
+    .select('orderNumber customer.name customer.phone pricing.finalAmount status orderType createdAt')
     .lean()
     .sort({ createdAt: -1 });
 
@@ -53,8 +53,10 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       'preparing': 'Preparing',
       'READY': 'Ready',
       'ready': 'Ready',
-      'OUT_FOR_DELIVERY': 'Ready', // Group with Ready
-      'out_for_delivery': 'Ready',
+      'READY_FOR_PICKUP': 'Ready for Pickup',
+      'ready_for_pickup': 'Ready for Pickup',
+      'OUT_FOR_DELIVERY': 'Out for Delivery',
+      'out_for_delivery': 'Out for Delivery',
       'DELIVERED': 'Delivered',
       'delivered': 'Delivered',
       'CANCELLED': 'Canceled',
@@ -68,6 +70,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       orderId: order.orderNumber,
       customer: `${order.customer?.name || 'N/A'}`,
       phone: order.customer?.phone || 'N/A',
+      orderType: order.orderType || 'DELIVERY', // Include orderType - critical for UI logic
       items: order.items?.map(item => ({
         name: item.name,
         portion: item.portion || '',
@@ -76,7 +79,21 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       })) || [],
       itemCount: order.items?.length || 0,
       total: order.pricing?.finalAmount || 0,
+      pricing: {
+        itemsTotal: order.pricing?.itemsTotal || 0,
+        deliveryFee: order.pricing?.deliveryFee || 0,
+        gst: order.pricing?.gst || 0,
+        gstRate: order.pricing?.gstRate || 0,
+        discount: order.pricing?.discount || 0,
+        finalAmount: order.pricing?.finalAmount || 0
+      },
       status: statusMap[order.status] || order.status,
+      deliveryPartner: order.deliveryPartner ? {
+        id: order.deliveryPartner._id?.toString() || order.deliveryPartner.id,
+        name: order.deliveryPartner.name,
+        phone: order.deliveryPartner.phone,
+        vehicleNumber: order.deliveryPartner.vehicleNumber
+      } : null,
       date: order.createdAt.toISOString().split('T')[0],
       time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
       address: {
@@ -100,8 +117,8 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       'preparing': 'Preparing',
       'READY': 'Ready',
       'ready': 'Ready',
-      'OUT_FOR_DELIVERY': 'Ready',
-      'out_for_delivery': 'Ready',
+      'OUT_FOR_DELIVERY': 'Out for Delivery',
+      'out_for_delivery': 'Out for Delivery',
       'DELIVERED': 'Delivered',
       'delivered': 'Delivered',
       'CANCELLED': 'Canceled',
@@ -115,6 +132,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       orderId: order.orderNumber,
       customer: `${order.customer?.name || 'N/A'}`,
       phone: order.customer?.phone || 'N/A',
+      orderType: order.orderType || 'DELIVERY',
       items: [], // Will be populated on expand
       itemCount: 0,
       total: order.pricing?.finalAmount || 0,
@@ -130,10 +148,14 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
     accepted: transformedActiveOrders.filter(o => o.status === 'Accepted'),
     preparing: transformedActiveOrders.filter(o => o.status === 'Preparing'),
     ready: transformedActiveOrders.filter(o => o.status === 'Ready'),
-    out_for_delivery: [], // Grouped with Ready
+    ready_for_pickup: transformedActiveOrders.filter(o => o.status === 'Ready for Pickup'),
+    out_for_delivery: transformedActiveOrders.filter(o => o.status === 'Out for Delivery'),
     delivered: transformedInactiveOrders.filter(o => o.status === 'Delivered'),
     cancelled: transformedInactiveOrders.filter(o => o.status === 'Canceled')
   };
+
+  // Log for debugging
+  logger.info(`📊 Today's Orders Summary: Pending=${groupedOrders.pending.length}, Accepted=${groupedOrders.accepted.length}, Ready=${groupedOrders.ready.length}, ReadyForPickup=${groupedOrders.ready_for_pickup.length}, OutForDelivery=${groupedOrders.out_for_delivery.length}, Delivered=${groupedOrders.delivered.length}`);
 
   res.status(200).json({
     status: 'success',
@@ -156,7 +178,7 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
 
   // Fetch orders (summary only but include items for count)
   const orders = await Order.find()
-    .select('orderNumber customer.name customer.phone pricing.finalAmount status createdAt items')
+    .select('orderNumber customer.name customer.phone pricing.finalAmount status orderType createdAt items')
     .lean()
     .sort({ createdAt: -1 })
     .skip(skip)
@@ -172,6 +194,8 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
     'preparing': 'Preparing',
     'READY': 'Ready',
     'ready': 'Ready',
+    'READY_FOR_PICKUP': 'Ready for Pickup',
+    'ready_for_pickup': 'Ready for Pickup',
     'OUT_FOR_DELIVERY': 'Ready',
     'out_for_delivery': 'Ready',
     'DELIVERED': 'Delivered',
@@ -187,6 +211,7 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
     orderId: order.orderNumber,
     customer: `${order.customer?.name || 'N/A'}`,
     phone: order.customer?.phone || 'N/A',
+    orderType: order.orderType || 'DELIVERY',
     items: [], // Will be populated on expand
     itemCount: order.items?.length || 0,
     total: order.pricing?.finalAmount || 0,
@@ -216,7 +241,7 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
  */
 exports.getOrderDetails = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id)
-    .select('orderNumber customer items pricing status createdAt deliveryAddress')
+    .select('orderNumber customer items pricing status orderType createdAt deliveryAddress')
     .lean();
 
   if (!order) {
@@ -236,6 +261,8 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
     'preparing': 'Preparing',
     'READY': 'Ready',
     'ready': 'Ready',
+    'READY_FOR_PICKUP': 'Ready for Pickup',
+    'ready_for_pickup': 'Ready for Pickup',
     'OUT_FOR_DELIVERY': 'Ready',
     'out_for_delivery': 'Ready',
     'DELIVERED': 'Delivered',
@@ -251,6 +278,7 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
     orderId: order.orderNumber,
     customer: `${order.customer?.name || 'N/A'}`,
     phone: order.customer?.phone || 'N/A',
+    orderType: order.orderType || 'DELIVERY',
     items: order.items?.map(item => ({
       name: item.name,
       portion: item.portion || '',
@@ -259,6 +287,14 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
     })) || [],
     itemCount: order.items?.length || 0,
     total: order.pricing?.finalAmount || 0,
+    pricing: {
+      itemsTotal: order.pricing?.itemsTotal || 0,
+      deliveryFee: order.pricing?.deliveryFee || 0,
+      gst: order.pricing?.gst || 0,
+      gstRate: order.pricing?.gstRate || 0,
+      discount: order.pricing?.discount || 0,
+      finalAmount: order.pricing?.finalAmount || 0
+    },
     status: statusMap[order.status] || order.status,
     date: order.createdAt.toISOString().split('T')[0],
     time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
@@ -270,6 +306,12 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
     },
     image: order.items?.[0]?.image || ''
   };
+
+  console.log('\n📦 ORDER DETAILS DEBUG (Backend):');
+  console.log('Order ID:', order._id);
+  console.log('Order Number:', order.orderNumber);
+  console.log('Raw pricing from DB:', JSON.stringify(order.pricing, null, 2));
+  console.log('Transformed pricing:', JSON.stringify(transformedOrder.pricing, null, 2));
 
   res.status(200).json({
     status: 'success',
@@ -395,20 +437,32 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
     return next(new AppError('Delivery address is required for delivery orders', 400));
   }
 
-  // Validate menu items
+  // Separate regular menu items from custom/open menu items
   console.log('🔍 Validating menu items...');
-  const menuItemIds = items.map(item => item.menuItem);
-  const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } }).lean();
+  const regularItems = items.filter(item => item.menuItem && item.menuItem !== 'custom');
+  const customItems = items.filter(item => !item.menuItem || item.menuItem === 'custom');
+  
+  console.log(`📦 Regular items: ${regularItems.length}, Custom items: ${customItems.length}`);
 
-  if (menuItems.length !== menuItemIds.length) {
-    console.log('❌ Some menu items not found');
-    return next(new AppError('Some menu items not found', 404));
+  // Validate regular menu items
+  let menuItems = [];
+  if (regularItems.length > 0) {
+    const menuItemIds = regularItems.map(item => item.menuItem);
+    menuItems = await MenuItem.find({ _id: { $in: menuItemIds } }).lean();
+
+    if (menuItems.length !== menuItemIds.length) {
+      console.log('❌ Some menu items not found');
+      return next(new AppError('Some menu items not found', 404));
+    }
+    console.log(`✅ All ${menuItems.length} regular menu items found`);
   }
-  console.log(`✅ All ${menuItems.length} menu items found`);
 
   // Calculate pricing
   let itemsTotal = 0;
-  const orderItems = items.map(item => {
+  const orderItems = [];
+  
+  // Process regular menu items
+  regularItems.forEach(item => {
     const menuItem = menuItems.find(m => m._id.toString() === item.menuItem);
     
     let itemPrice = item.price;
@@ -425,7 +479,7 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
     const subtotal = itemPrice * item.quantity;
     itemsTotal += subtotal;
 
-    return {
+    orderItems.push({
       menuItemId: menuItem._id,
       name: menuItem.name,
       image: menuItem.image,
@@ -433,7 +487,30 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
       quantity: item.quantity,
       price: itemPrice,
       subtotal
-    };
+    });
+  });
+  
+  // Process custom/open menu items
+  customItems.forEach(item => {
+    if (!item.name || !item.price) {
+      throw new AppError('Custom items must have name and price', 400);
+    }
+    
+    const itemPrice = parseFloat(item.price);
+    const subtotal = itemPrice * item.quantity;
+    itemsTotal += subtotal;
+
+    orderItems.push({
+      menuItemId: null, // No menu item reference for custom items
+      name: item.name,
+      image: '/images/product/custom-item.jpg',
+      portion: item.portion || 'Custom',
+      quantity: item.quantity,
+      price: itemPrice,
+      subtotal,
+      isCustom: true
+    });
+    console.log(`✅ Added custom item: ${item.name} @ ₹${itemPrice} x ${item.quantity}`);
   });
 
   // Get settings for tax and delivery

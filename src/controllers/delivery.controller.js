@@ -200,8 +200,8 @@ exports.updateDeliveryPartner = catchAsync(async (req, res, next) => {
   }
 
   if (password) {
-    if (password.length < 8) {
-      return next(new AppError('Password must be at least 8 characters long', 400));
+    if (password.length < 6) {
+      return next(new AppError('Password must be at least 6 characters long', 400));
     }
     deliveryPartner.password = password;
   }

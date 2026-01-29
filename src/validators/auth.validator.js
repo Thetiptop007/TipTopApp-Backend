@@ -33,16 +33,13 @@ exports.registerSchema = Joi.object({
   }),
 
   password: Joi.string()
-    .min(8)
+    .min(6)
     .max(128)
-    .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z\d@$!%*?&]/)
     .required()
     .messages({
       'string.empty': 'Password is required',
-      'string.min': 'Password must be at least 8 characters',
+      'string.min': 'Password must be at least 6 characters',
       'string.max': 'Password cannot exceed 128 characters',
-      'string.pattern.base':
-        'Password must contain at least one uppercase letter, one lowercase letter, and one number',
     }),
 
   phone: Joi.string()
@@ -164,16 +161,13 @@ exports.forgotPasswordSchema = Joi.object({
  */
 exports.resetPasswordSchema = Joi.object({
   password: Joi.string()
-    .min(8)
+    .min(6)
     .max(128)
-    .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
     .required()
     .messages({
       'string.empty': 'Password is required',
-      'string.min': 'Password must be at least 8 characters',
+      'string.min': 'Password must be at least 6 characters',
       'string.max': 'Password cannot exceed 128 characters',
-      'string.pattern.base':
-        'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character',
     }),
 });
 
@@ -304,8 +298,31 @@ exports.deleteAccountSchema = Joi.object({
   }),
 });
 
-/**
- * Middleware to validate request body
+/** * Validation schema for changing password
+ */
+exports.changePasswordSchema = Joi.object({
+  currentPassword: Joi.string().required().messages({
+    'string.empty': 'Current password is required',
+  }),
+  newPassword: Joi.string()
+    .min(6)
+    .max(128)
+    .required()
+    .messages({
+      'string.empty': 'New password is required',
+      'string.min': 'New password must be at least 6 characters',
+      'string.max': 'New password cannot exceed 128 characters',
+    }),
+  confirmPassword: Joi.string()
+    .valid(Joi.ref('newPassword'))
+    .required()
+    .messages({
+      'string.empty': 'Confirm password is required',
+      'any.only': 'Passwords do not match',
+    }),
+});
+
+/** * Middleware to validate request body
  */
 exports.validate = schema => {
   return (req, res, next) => {

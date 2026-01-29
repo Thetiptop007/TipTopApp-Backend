@@ -15,7 +15,7 @@ const orderItemSchema = new mongoose.Schema({
   menuItemId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'MenuItem',
-    required: true,
+    required: false, // Optional to support custom/open menu items
   },
   name: {
     type: String,
@@ -37,6 +37,10 @@ const orderItemSchema = new mongoose.Schema({
   subtotal: {
     type: Number,
     required: true,
+  },
+  isCustom: {
+    type: Boolean,
+    default: false, // Flag for custom/open menu items
   },
 });
 
@@ -189,7 +193,7 @@ const orderSchema = new mongoose.Schema(
     // Order Status & Timeline
     status: {
       type: String,
-      enum: ['PENDING', 'ACCEPTED', 'READY', 'ASSIGNED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'COMPLETED'],
+      enum: ['PENDING', 'ACCEPTED', 'READY', 'READY_FOR_PICKUP', 'ASSIGNED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'COMPLETED'],
       default: 'PENDING',
     },
 

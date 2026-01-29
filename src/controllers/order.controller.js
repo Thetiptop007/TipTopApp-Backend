@@ -1037,9 +1037,12 @@ exports.markOrderReady = catchAsync(async (req, res, next) => {
  * Admin only
  */
 exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
-  const { partnerId } = req.body;
+  const { partnerId, deliveryPartnerId } = req.body;
+  
+  // Accept both parameter names for compatibility
+  const partnerIdToUse = deliveryPartnerId || partnerId;
 
-  if (!partnerId) {
+  if (!partnerIdToUse) {
     return next(new AppError('Delivery partner ID is required', 400));
   }
 
@@ -1053,33 +1056,37 @@ exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
   }
 
   // Get delivery partner details
-  const partner = await User.findById(partnerId);
+  const partner = await User.findById(partnerIdToUse);
   if (!partner || partner.role !== 'delivery') {
     return next(new AppError('Invalid delivery partner', 400));
   }
 
-  // Assign partner
+  // Assign partner and mark as OUT_FOR_DELIVERY (same as when agent claims)
   order.deliveryPartner = {
     id: partner._id,
     name: `${partner.name.first} ${partner.name.last}`,
     phone: partner.phone.number,
     vehicleNumber: partner.deliveryProfile?.vehicleNumber || 'N/A',
     assignedAt: new Date(),
+    pickedUpAt: new Date(), // Set pickedUpAt same as when agent claims
   };
 
+  // Change status to OUT_FOR_DELIVERY (same as claim behavior)
+  order.status = 'OUT_FOR_DELIVERY';
+  
   order.statusHistory.push({
-    status: 'READY',
+    status: 'OUT_FOR_DELIVERY',
     timestamp: new Date(),
     updatedBy: req.user._id,
-    notes: `Delivery partner assigned: ${partner.name.first} ${partner.name.last}`,
+    notes: `Delivery partner assigned by admin: ${partner.name.first} ${partner.name.last} - Order out for delivery`,
   });
 
   await order.save();
 
-  logger.info(`Order ${order.orderNumber} assigned to partner ${partner.email.address}`);
+  logger.info(`Order ${order.orderNumber} assigned to partner ${partner.email.address} and marked as OUT_FOR_DELIVERY`);
 
   // Emit notification to delivery partner
-  emitUserNotification(partnerId, {
+  emitUserNotification(partnerIdToUse.toString(), {
     type: 'order_assigned',
     title: 'New Delivery Order',
     message: `Order ${order.orderNumber} has been assigned to you`,
@@ -1087,17 +1094,20 @@ exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
     orderNumber: order.orderNumber,
   });
 
-  // Emit notification to customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'partner_assigned',
-    title: 'Delivery Partner Assigned',
-    message: `${partner.name.first} will deliver your order`,
-    orderId: order._id,
-    partner: {
-      name: `${partner.name.first} ${partner.name.last}`,
-      phone: partner.phone.number,
-    },
-  });
+  // Emit notification to customer (order is now out for delivery)
+  const customerId = order.customer?.id || order.customer?._id || order.customerId;
+  if (customerId) {
+    emitUserNotification(customerId.toString(), {
+      type: 'order_out_for_delivery',
+      title: 'Order On The Way',
+      message: `${partner.name.first} is on the way with your order`,
+      orderId: order._id,
+      partner: {
+        name: `${partner.name.first} ${partner.name.last}`,
+        phone: partner.phone.number,
+      },
+    });
+  }
 
   res.status(200).json({
     status: 'success',
