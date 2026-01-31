@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "dev2": "nodemon server2.js",
     "test": "jest --coverage --detectOpenHandles",
     "test:watch": "jest --watch",
     "test:unit": "jest tests/unit",
@@ -29,7 +30,6 @@
   "author": "The-Tip-Top Team",
   "license": "MIT",
   "dependencies": {
-    "@getbrevo/brevo": "^3.0.1",
     "bcryptjs": "^2.4.3",
     "compression": "^1.7.4",
     "cookie-parser": "^1.4.6",
@@ -48,6 +48,7 @@
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "redis": "^4.7.1",
+    "resend": "^6.9.1",
     "socket.io": "^4.8.1",
     "winston": "^3.11.0",
     "xss-clean": "^0.1.4"

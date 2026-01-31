@@ -8,7 +8,7 @@ const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const logger = require('./utils/logger');
 const AppError = require('./utils/AppError');
-const errorHandler = require('./middlewares/errorHandler');
+const { errorHandler } = require('./middlewares/errorHandler.middleware');
 const cache = require('./utils/cache');
 
 const app = express();
@@ -66,7 +66,7 @@ const corsOptions = {
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Idempotency-Key', 'X-Idempotency-Key'],
 };
 
 app.use(cors(corsOptions));
@@ -118,8 +118,12 @@ const deliveryRoutes = require('./routes/delivery.routes');
 const settingsRoutes = require('./routes/settings.routes');
 const addressRoutes = require('./routes/address.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
-const adminOrderManagementRoutes = require('./routes/admin-order-management.routes');
-const adminMenuRoutes = require('./routes/admin-menu.routes');
+const errorRoutes = require('./routes/error.routes');
+const developerRoutes = require('./routes/developer.routes');
+
+// Legacy compatibility routes for old admin panel paths
+const adminOrdersRoutes = require('./routes/admin-orders.routes');
+const adminMenuItemsRoutes = require('./routes/admin-menu-items.routes');
 
 // Mount routes
 app.use('/api/v1/auth', authRoutes);
@@ -131,8 +135,14 @@ app.use('/api/v1/delivery', deliveryRoutes);
 app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1/addresses', addressRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
-app.use('/api/v1/admin/orders', adminOrderManagementRoutes);
-app.use('/api/v1/admin/menu-items', adminMenuRoutes);
+app.use('/api/v1/errors', errorRoutes);
+app.use('/api/v1/developer', developerRoutes);
+
+// Mount legacy compatibility routes (for old web admin panel)
+app.use('/api/v1/admin/orders', adminOrdersRoutes);
+app.use('/api/v1/admin/menu-items', adminMenuItemsRoutes);
+
+
 
 // Test route
 app.get('/api/v1/test', (req, res) => {

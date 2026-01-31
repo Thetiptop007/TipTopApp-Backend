@@ -1,9 +1,418 @@
-const MenuItem = require('../models/MenuItem');
-const AppError = require('../utils/AppError');
-const catchAsync = require('../utils/catchAsync');
+/**
+ * =====================================================
+ * MENU CONTROLLER
+ * Domain-based controller for all menu-related operations
+ * =====================================================
+ */
+
 const APIFeatures = require('../utils/APIFeatures');
+const AppError = require('../utils/AppError');
+const Category = require('../models/category.model');
+const MenuItem = require('../models/MenuItem');
+const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
 const { invalidateCache } = require('../middlewares/cache');
+
+/* =====================================================
+   ADMIN RELATED MENU CONTROLLERS
+===================================================== */
+
+exports.getMenuItems = catchAsync(async (req, res, next) => {
+  // Use APIFeatures for advanced search with relevance sorting
+  const features = new APIFeatures(MenuItem.find(), req.query)
+    .filter()
+    .search()
+    .sort()
+    .limitFields()
+    .paginate();
+
+  // Execute query with pagination metadata
+  const result = await features.execute(MenuItem);
+
+  // Transform items to frontend format
+  const transformedItems = result.data.map(item => {
+    const itemObj = item.toObject ? item.toObject() : item;
+    
+    // Get the first price variant or lowest price
+    const lowestPrice = itemObj.priceVariants && itemObj.priceVariants.length > 0
+      ? Math.min(...itemObj.priceVariants.map(v => v.price))
+      : 0;
+
+    return {
+      id: itemObj._id.toString(),
+      name: itemObj.name,
+      description: itemObj.description || '',
+      image: itemObj.image || '',
+      category: itemObj.categories && itemObj.categories.length > 0 ? itemObj.categories[0] : 'Other',
+      categories: itemObj.categories || [],
+      price: lowestPrice,
+      priceVariants: itemObj.priceVariants || [],
+      rating: itemObj.rating || 0,
+      reviews: itemObj.reviews || 0,
+      availability: itemObj.isAvailable && itemObj.isActive ? 'Available' : 'Out of Stock',
+      isAvailable: itemObj.isAvailable || false,
+      isActive: itemObj.isActive || false,
+      totalOrders: itemObj.stats?.totalOrders || 0,
+      totalRevenue: itemObj.stats?.totalRevenue || 0
+    };
+  });
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      items: transformedItems,
+      pagination: result.pagination
+    }
+  });
+});
+
+exports.getCategories = catchAsync(async (req, res, next) => {
+  // Get all active categories from Category collection
+  const categories = await Category.find({ isActive: true })
+    .select('name')
+    .sort('name')
+    .lean();
+
+  // Extract category names
+  const categoryNames = categories.map(cat => cat.name);
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      categories: categoryNames,
+      count: categoryNames.length
+    }
+  });
+});
+
+exports.getMenuItem = catchAsync(async (req, res, next) => {
+  const item = await MenuItem.findById(req.params.id).lean();
+
+  if (!item) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Menu item not found'
+    });
+  }
+
+  // Get the lowest price
+  const lowestPrice = item.priceVariants && item.priceVariants.length > 0
+    ? Math.min(...item.priceVariants.map(v => v.price))
+    : 0;
+
+  const transformedItem = {
+    id: item._id.toString(),
+    name: item.name,
+    description: item.description || '',
+    image: item.image || '',
+    category: item.categories && item.categories.length > 0 ? item.categories[0] : 'Other',
+    categories: item.categories || [],
+    price: lowestPrice,
+    priceVariants: item.priceVariants || [],
+    rating: item.rating || 0,
+    reviews: item.reviews || 0,
+    availability: item.isAvailable && item.isActive ? 'Available' : 'Out of Stock',
+    isAvailable: item.isAvailable || false,
+    isActive: item.isActive || false,
+    totalOrders: item.stats?.totalOrders || 0,
+    totalRevenue: item.stats?.totalRevenue || 0,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt
+  };
+
+  res.status(200).json({
+    status: 'success',
+    data: transformedItem
+  });
+});
+
+exports.updateAvailability = catchAsync(async (req, res, next) => {
+  const { isAvailable } = req.body;
+
+  const item = await MenuItem.findByIdAndUpdate(
+    req.params.id,
+    { isAvailable },
+    { new: true, runValidators: true }
+  );
+
+  if (!item) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Menu item not found'
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: `Item ${isAvailable ? 'marked as available' : 'marked as out of stock'}`,
+    data: {
+      id: item._id.toString(),
+      isAvailable: item.isAvailable
+    }
+  });
+});
+
+exports.deleteMenuItem = catchAsync(async (req, res, next) => {
+  const item = await MenuItem.findByIdAndDelete(req.params.id);
+
+  if (!item) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Menu item not found'
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Menu item deleted successfully'
+  });
+});
+
+exports.createMenuItem = catchAsync(async (req, res, next) => {
+  const {
+    name,
+    description,
+    image,
+    priceVariants,
+    category, // Changed from categories to category (single value)
+    preparationTime,
+    isVegetarian,
+    isSpicy,
+    isAvailable
+  } = req.body;
+
+  // Validate required fields
+  if (!name || !priceVariants || priceVariants.length === 0) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Name and at least one price variant are required'
+    });
+  }
+
+  // Validate category
+  if (!category || category === 'All') {
+    return res.status(400).json({
+      status: 'error',
+      message: 'A valid category is required (cannot be "All")'
+    });
+  }
+
+  // Create menu item - store category as single-element array
+  const menuItem = await MenuItem.create({
+    name,
+    description: description || '',
+    image: image || '/images/product/placeholder.jpg',
+    priceVariants,
+    categories: [category], // Store as array with single element
+    preparationTime: preparationTime || 15,
+    isVegetarian: isVegetarian || false,
+    isSpicy: isSpicy || false,
+    isAvailable: isAvailable !== undefined ? isAvailable : true,
+    isActive: true,
+    rating: 4.0,
+    reviews: 0
+  });
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Menu item created successfully',
+    data: {
+      item: {
+        id: menuItem._id.toString(),
+        name: menuItem.name,
+        description: menuItem.description,
+        image: menuItem.image,
+        priceVariants: menuItem.priceVariants,
+        categories: menuItem.categories,
+        preparationTime: menuItem.preparationTime,
+        isVegetarian: menuItem.isVegetarian,
+        isSpicy: menuItem.isSpicy,
+        isAvailable: menuItem.isAvailable,
+        isActive: menuItem.isActive,
+        rating: menuItem.rating,
+        reviews: menuItem.reviews
+      }
+    }
+  });
+});
+
+exports.updateMenuItem = catchAsync(async (req, res, next) => {
+  const {
+    name,
+    description,
+    image,
+    priceVariants,
+    category, // Changed from categories to category (single value)
+    preparationTime,
+    isVegetarian,
+    isSpicy,
+    isAvailable,
+    isActive
+  } = req.body;
+
+  // Find menu item
+  const menuItem = await MenuItem.findById(req.params.id);
+
+  if (!menuItem) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Menu item not found'
+    });
+  }
+
+  // Validate required fields if provided
+  if (priceVariants && priceVariants.length === 0) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'At least one price variant is required'
+    });
+  }
+
+  // Validate category if provided
+  if (category && category === 'All') {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Category cannot be "All"'
+    });
+  }
+
+  // Update fields
+  if (name !== undefined) menuItem.name = name;
+  if (description !== undefined) menuItem.description = description;
+  if (image !== undefined) menuItem.image = image;
+  if (priceVariants !== undefined) menuItem.priceVariants = priceVariants;
+  if (category !== undefined) menuItem.categories = [category]; // Store as single-element array
+  if (preparationTime !== undefined) menuItem.preparationTime = preparationTime;
+  if (isVegetarian !== undefined) menuItem.isVegetarian = isVegetarian;
+  if (isSpicy !== undefined) menuItem.isSpicy = isSpicy;
+  if (isAvailable !== undefined) menuItem.isAvailable = isAvailable;
+  if (isActive !== undefined) menuItem.isActive = isActive;
+
+  await menuItem.save();
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Menu item updated successfully',
+    data: {
+      item: {
+        id: menuItem._id.toString(),
+        name: menuItem.name,
+        description: menuItem.description,
+        image: menuItem.image,
+        priceVariants: menuItem.priceVariants,
+        categories: menuItem.categories,
+        preparationTime: menuItem.preparationTime,
+        isVegetarian: menuItem.isVegetarian,
+        isSpicy: menuItem.isSpicy,
+        isAvailable: menuItem.isAvailable,
+        isActive: menuItem.isActive,
+        rating: menuItem.rating,
+        reviews: menuItem.reviews
+      }
+    }
+  });
+});
+
+/* =====================================================
+   CUSTOMER / PUBLIC MENU CONTROLLERS
+===================================================== */
+
+/**
+ * @desc    Get all menu items for customers (filtered, available only)
+ * @route   GET /api/v1/menu
+ * @access  Public
+ */
+exports.getPublicMenu = catchAsync(async (req, res, next) => {
+  req.query.isAvailable = true;
+  req.query.isActive = true;
+
+  const features = new APIFeatures(MenuItem.find(), req.query)
+    .filter()
+    .search()
+    .sort()
+    .limitFields()
+    .paginate();
+
+  const result = await features.execute(MenuItem);
+
+  const transformedItems = result.data.map(item => {
+    const itemObj = item.toObject ? item.toObject() : item;
+    
+    const lowestPrice = itemObj.priceVariants && itemObj.priceVariants.length > 0
+      ? Math.min(...itemObj.priceVariants.map(v => v.price))
+      : 0;
+
+    return {
+      id: itemObj._id.toString(),
+      name: itemObj.name,
+      description: itemObj.description || '',
+      image: itemObj.image || '',
+      category: itemObj.categories && itemObj.categories.length > 0 ? itemObj.categories[0] : 'Other',
+      categories: itemObj.categories || [],
+      price: lowestPrice,
+      priceVariants: itemObj.priceVariants || [],
+      rating: itemObj.rating || 0,
+      reviews: itemObj.reviews || 0,
+      preparationTime: itemObj.preparationTime || 15,
+      isVegetarian: itemObj.isVegetarian || false,
+      isSpicy: itemObj.isSpicy || false
+    };
+  });
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      items: transformedItems,
+      pagination: result.pagination
+    }
+  });
+});
+
+/**
+ * @desc    Get single menu item details (Public)
+ * @route   GET /api/v1/menu/:id
+ * @access  Public
+ */
+exports.getPublicMenuItem = catchAsync(async (req, res, next) => {
+  const item = await MenuItem.findOne({
+    _id: req.params.id,
+    isAvailable: true,
+    isActive: true
+  }).lean();
+
+  if (!item) {
+    return next(new AppError('Menu item not found or not available', 404));
+  }
+
+  const lowestPrice = item.priceVariants && item.priceVariants.length > 0
+    ? Math.min(...item.priceVariants.map(v => v.price))
+    : 0;
+
+  const transformedItem = {
+    id: item._id.toString(),
+    name: item.name,
+    description: item.description || '',
+    image: item.image || '',
+    category: item.categories && item.categories.length > 0 ? item.categories[0] : 'Other',
+    categories: item.categories || [],
+    price: lowestPrice,
+    priceVariants: item.priceVariants || [],
+    rating: item.rating || 0,
+    reviews: item.reviews || 0,
+    preparationTime: item.preparationTime || 15,
+    isVegetarian: item.isVegetarian || false,
+    isSpicy: item.isSpicy || false
+  };
+
+  res.status(200).json({
+    status: 'success',
+    data: transformedItem
+  });
+});
+
+/* =====================================================
+   PUBLIC / CUSTOMER MENU CONTROLLERS (Additional)
+===================================================== */
 
 /**
  * Get all menu items with filtering, sorting, and pagination
@@ -72,26 +481,6 @@ exports.getAllMenuItems = catchAsync(async (req, res, next) => {
     },
     data: {
       menuItems: paginatedItems,
-    },
-  });
-});
-
-/**
- * Get menu item by ID
- * GET /api/v1/menu/:id
- * Public access
- */
-exports.getMenuItem = catchAsync(async (req, res, next) => {
-  const menuItem = await MenuItem.findById(req.params.id);
-
-  if (!menuItem) {
-    return next(new AppError('Menu item not found', 404));
-  }
-
-  res.status(200).json({
-    status: 'success',
-    data: {
-      menuItem,
     },
   });
 });
@@ -180,80 +569,71 @@ exports.getAllCategories = catchAsync(async (req, res, next) => {
 });
 
 /**
- * Create new menu item
- * POST /api/v1/menu
- * Admin only
+ * Get menu statistics
+ * GET /api/v1/menu/stats/overview
+ * Admin/Public access
  */
-exports.createMenuItem = catchAsync(async (req, res, next) => {
-  const menuItem = await MenuItem.create(req.body);
+exports.getMenuStats = catchAsync(async (req, res, next) => {
+  const stats = await MenuItem.aggregate([
+    {
+      $group: {
+        _id: '$category.main',
+        count: { $sum: 1 },
+        avgPrice: { $avg: '$price' },
+        avgRating: { $avg: '$rating' },
+        totalOrders: { $sum: '$stats.totalOrders' },
+        totalRevenue: { $sum: '$stats.totalRevenue' },
+      },
+    },
+    {
+      $sort: { totalRevenue: -1 },
+    },
+  ]);
 
-  logger.info(`Menu item created: ${menuItem.name} by ${req.user.email.address}`);
+  const overview = await MenuItem.aggregate([
+    {
+      $group: {
+        _id: null,
+        totalItems: { $sum: 1 },
+        availableItems: {
+          $sum: { $cond: ['$isAvailable', 1, 0] },
+        },
+        vegetarianItems: {
+          $sum: { $cond: ['$isVegetarian', 1, 0] },
+        },
+        avgPrice: { $avg: '$price' },
+        totalOrders: { $sum: '$stats.totalOrders' },
+        totalRevenue: { $sum: '$stats.totalRevenue' },
+      },
+    },
+  ]);
 
-  // Invalidate menu cache
-  await invalidateCache('menu:*');
-
-  res.status(201).json({
+  res.status(200).json({
     status: 'success',
-    message: 'Menu item created successfully',
     data: {
-      menuItem,
+      overview: overview[0] || {},
+      categoryStats: stats,
     },
   });
 });
 
 /**
- * Update menu item
- * PATCH /api/v1/menu/:id
- * Admin only
+ * Get menu item by ID
+ * GET /api/v1/menu/:id
+ * Public access
  */
-exports.updateMenuItem = catchAsync(async (req, res, next) => {
-  // Prevent updating stats directly
-  delete req.body.stats;
-  delete req.body.slug;
-
-  const menuItem = await MenuItem.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true,
-  });
+exports.getMenuItem = catchAsync(async (req, res, next) => {
+  const menuItem = await MenuItem.findById(req.params.id);
 
   if (!menuItem) {
     return next(new AppError('Menu item not found', 404));
   }
 
-  logger.info(`Menu item updated: ${menuItem.name} by ${req.user.email.address}`);
-
-  // Invalidate menu cache
-  await invalidateCache('menu:*');
-
   res.status(200).json({
     status: 'success',
-    message: 'Menu item updated successfully',
     data: {
       menuItem,
     },
-  });
-});
-
-/**
- * Delete menu item (permanent delete)
- * DELETE /api/v1/menu/:id
- * Admin only
- */
-exports.deleteMenuItem = catchAsync(async (req, res, next) => {
-  const menuItem = await MenuItem.findByIdAndDelete(req.params.id);
-
-  if (!menuItem) {
-    return next(new AppError('Menu item not found', 404));
-  }
-
-  logger.info(`Menu item deleted: ${menuItem.name} by ${req.user.email.address}`);
-
-  // Invalidate menu cache
-  await invalidateCache('menu:*');
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Menu item deleted successfully',
   });
 });
 
@@ -307,86 +687,4 @@ exports.restoreMenuItem = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Update menu item availability
- * PATCH /api/v1/menu/:id/availability
- * Admin only
- */
-exports.updateAvailability = catchAsync(async (req, res, next) => {
-  const { isAvailable } = req.body;
-
-  if (typeof isAvailable !== 'boolean') {
-    return next(new AppError('Please provide isAvailable as boolean', 400));
-  }
-
-  const menuItem = await MenuItem.findByIdAndUpdate(
-    req.params.id,
-    { isAvailable },
-    { new: true }
-  );
-
-  if (!menuItem) {
-    return next(new AppError('Menu item not found', 404));
-  }
-
-  logger.info(
-    `Menu item availability updated: ${menuItem.name} - ${isAvailable} by ${req.user.email.address}`
-  );
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Availability updated successfully',
-    data: {
-      menuItem,
-    },
-  });
-});
-
-/**
- * Get menu statistics
- * GET /api/v1/menu/stats/overview
- * Admin only
- */
-exports.getMenuStats = catchAsync(async (req, res, next) => {
-  const stats = await MenuItem.aggregate([
-    {
-      $group: {
-        _id: '$category.main',
-        count: { $sum: 1 },
-        avgPrice: { $avg: '$price' },
-        avgRating: { $avg: '$rating' },
-        totalOrders: { $sum: '$stats.totalOrders' },
-        totalRevenue: { $sum: '$stats.totalRevenue' },
-      },
-    },
-    {
-      $sort: { totalRevenue: -1 },
-    },
-  ]);
-
-  const overview = await MenuItem.aggregate([
-    {
-      $group: {
-        _id: null,
-        totalItems: { $sum: 1 },
-        availableItems: {
-          $sum: { $cond: ['$isAvailable', 1, 0] },
-        },
-        vegetarianItems: {
-          $sum: { $cond: ['$isVegetarian', 1, 0] },
-        },
-        avgPrice: { $avg: '$price' },
-        totalOrders: { $sum: '$stats.totalOrders' },
-        totalRevenue: { $sum: '$stats.totalRevenue' },
-      },
-    },
-  ]);
-
-  res.status(200).json({
-    status: 'success',
-    data: {
-      overview: overview[0] || {},
-      categoryStats: stats,
-    },
-  });
-});
+module.exports = exports;

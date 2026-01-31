@@ -14,9 +14,9 @@ exports.createMenuItemSchema = Joi.object({
     'string.max': 'Description cannot exceed 1000 characters',
   }),
 
-  image: Joi.string().uri().required().messages({
+  // Allow both full URLs and relative paths (for placeholder images)
+  image: Joi.string().trim().required().messages({
     'string.empty': 'Image URL is required',
-    'string.uri': 'Please provide a valid image URL',
   }),
 
   // Price Variants - required
@@ -44,14 +44,12 @@ exports.createMenuItemSchema = Joi.object({
       'any.required': 'Price variants are required',
     }),
 
-  // Categories - required array
+  // Categories - optional if category is provided (for backward compatibility)
   categories: Joi.array()
     .items(Joi.string())
     .min(1)
-    .required()
     .messages({
       'array.min': 'At least one category is required',
-      'any.required': 'Categories are required',
     }),
 
   rating: Joi.number().min(0).max(5).default(4.0).messages({
@@ -75,11 +73,15 @@ exports.createMenuItemSchema = Joi.object({
     'array.max': 'Maximum 5 images allowed',
   }),
 
-  category: Joi.object({
-    main: Joi.string(),
-    sub: Joi.array().items(Joi.string()),
-    tags: Joi.array().items(Joi.string()).max(10),
-  }),
+  // Allow category as either string (category name/ID) or object (detailed structure)
+  category: Joi.alternatives().try(
+    Joi.string().trim(),
+    Joi.object({
+      main: Joi.string(),
+      sub: Joi.array().items(Joi.string()),
+      tags: Joi.array().items(Joi.string()).max(10),
+    })
+  ),
 
   plateQuantity: Joi.string()
     .valid('Full', 'Half', 'Quarter')
@@ -183,8 +185,9 @@ exports.updateMenuItemSchema = Joi.object({
     'string.max': 'Description cannot exceed 1000 characters',
   }),
 
-  image: Joi.string().uri().messages({
-    'string.uri': 'Please provide a valid image URL',
+  // Allow both full URLs and relative paths (for placeholder images)
+  image: Joi.string().trim().messages({
+    'string.empty': 'Image URL is required',
   }),
 
   // Price Variants
@@ -236,11 +239,15 @@ exports.updateMenuItemSchema = Joi.object({
     'array.max': 'Maximum 5 images allowed',
   }),
 
-  category: Joi.object({
-    main: Joi.string(),
-    sub: Joi.array().items(Joi.string()),
-    tags: Joi.array().items(Joi.string()).max(10),
-  }),
+  // Allow category as either string (category name/ID) or object (detailed structure)
+  category: Joi.alternatives().try(
+    Joi.string().trim(),
+    Joi.object({
+      main: Joi.string(),
+      sub: Joi.array().items(Joi.string()),
+      tags: Joi.array().items(Joi.string()).max(10),
+    })
+  ),
 
   plateQuantity: Joi.string()
     .valid('Full', 'Half', 'Quarter')

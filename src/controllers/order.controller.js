@@ -1,20 +1,1391 @@
-const Order = require('../models/Order');
-const MenuItem = require('../models/MenuItem');
-const User = require('../models/User');
-const Settings = require('../models/Settings');
-const AppError = require('../utils/AppError');
-const catchAsync = require('../utils/catchAsync');
-const APIFeatures = require('../utils/APIFeatures');
-const logger = require('../utils/logger');
-const { emitOrderUpdate, emitUserNotification, emitNewOrder } = require('../utils/socket');
-const emailService = require('../services/email.service');
-const notificationService = require('../services/notification.service');
-
 /**
- * Create new order
- * POST /api/v1/orders
- * Customer only
+ * =====================================================
+ * ORDER CONTROLLER
+ * Domain-based controller for all order-related operations
+ * =====================================================
  */
+
+const APIFeatures = require('../utils/APIFeatures');
+const AppError = require('../utils/AppError');
+const MenuItem = require('../models/MenuItem');
+const Order = require('../models/Order');
+const Settings = require('../models/Settings');
+const User = require('../models/User');
+const catchAsync = require('../utils/catchAsync');
+const emailService = require('../services/email.service');
+const logger = require('../utils/logger');
+const mongoose = require('mongoose');
+const notificationService = require('../services/notification.service');
+const { emitOrderUpdate, emitUserNotification, emitNewOrder } = require('../utils/socket');
+
+/* =====================================================
+   ADMIN RELATED ORDER CONTROLLERS
+===================================================== */
+
+exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
+  const {
+    customerName,
+    customerPhone,
+    customerEmail,
+    items,
+    orderType, // 'DELIVERY' or 'TAKEAWAY'
+    deliveryAddress,
+    paymentMethod,
+    specialInstructions,
+  } = req.body;
+
+  // Validation
+  if (!customerName || !customerPhone) {
+    return next(new AppError('Customer name and phone are required', 400));
+  }
+
+  if (!items || items.length === 0) {
+    return next(new AppError('Order must contain at least one item', 400));
+  }
+
+  if (orderType === 'DELIVERY' && !deliveryAddress) {
+    return next(new AppError('Delivery address is required for delivery orders', 400));
+  }
+
+  // Separate regular menu items from custom items
+  const regularItems = items.filter(item => item.menuItemId !== 'custom');
+  const customItems = items.filter(item => item.menuItemId === 'custom');
+
+  // Validate regular menu items
+  const menuItemIds = regularItems.map((item) => item.menuItemId);
+  let menuItems = [];
+  
+  if (menuItemIds.length > 0) {
+    menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
+
+    // Check if all items exist
+    if (menuItems.length !== menuItemIds.length) {
+      return next(new AppError('Some menu items do not exist', 400));
+    }
+
+    // Check if all items are available
+    const unavailableItems = menuItems.filter(item => !item.isAvailable);
+    if (unavailableItems.length > 0) {
+      return next(new AppError(`Some menu items are not available: ${unavailableItems.map(i => i.name).join(', ')}`, 400));
+    }
+  }
+
+  // Get settings for tax and delivery charges
+  const settings = await Settings.getSettings();
+
+  // Create or find customer user
+  let customer = await User.findOne({ 'phone.number': customerPhone });
+
+  if (!customer) {
+    // Create a basic customer profile for walk-in/phone orders
+    const nameParts = customerName.trim().split(' ');
+    const firstName = nameParts[0] || 'Customer';
+    const lastName = nameParts.slice(1).join(' ') || 'Guest';
+    
+    // Generate a temporary email if not provided
+    const email = customerEmail || `${customerPhone}@walkin.thetiptop.com`;
+    
+    // Generate a random password (user can reset it later if they want to use the app)
+    const randomPassword = Math.random().toString(36).slice(-10) + Math.random().toString(36).slice(-10);
+    
+    customer = await User.create({
+      name: {
+        first: firstName,
+        last: lastName,
+      },
+      phone: {
+        number: customerPhone,
+        isVerified: false,
+      },
+      email: {
+        address: email,
+        isVerified: customerEmail ? false : true, // Auto-verify temp emails
+      },
+      password: randomPassword,
+      role: 'customer',
+      isActive: true,
+    });
+    logger.info(`Created new customer: ${customerName} (${customerPhone}) with temp email: ${email}`);
+  }
+
+  // Calculate pricing
+  let itemsTotal = 0;
+  const orderItems = [];
+  
+  // Process regular menu items
+  regularItems.forEach((item) => {
+    const menuItem = menuItems.find((mi) => mi._id.toString() === item.menuItemId);
+    const portion = item.portion || 'Full';
+    
+    // Try to find price from priceVariants first, then fall back to portions
+    let price;
+    if (item.price) {
+      price = item.price; // Use provided price if available
+    } else if (menuItem.priceVariants && menuItem.priceVariants.length > 0) {
+      const variant = menuItem.priceVariants.find((v) => v.quantity === portion);
+      price = variant?.price || menuItem.priceVariants[0]?.price || menuItem.basePrice || 0;
+    } else if (menuItem.portions && menuItem.portions.length > 0) {
+      const portionObj = menuItem.portions.find((p) => p.name === portion);
+      price = portionObj?.price || menuItem.basePrice || 0;
+    } else {
+      price = menuItem.basePrice || 0;
+    }
+    
+    const subtotal = price * item.quantity;
+    itemsTotal += subtotal;
+
+    orderItems.push({
+      menuItemId: menuItem._id,
+      name: menuItem.name,
+      image: menuItem.images?.[0] || menuItem.image,
+      description: menuItem.description,
+      portion,
+      price,
+      quantity: item.quantity,
+      customizations: item.customizations || [],
+      subtotal,
+    });
+  });
+  
+  // Process custom items
+  customItems.forEach((item) => {
+    if (!item.name || !item.price) {
+      throw new AppError('Custom items must have name and price', 400);
+    }
+    
+    const price = parseFloat(item.price);
+    const subtotal = price * item.quantity;
+    itemsTotal += subtotal;
+
+    orderItems.push({
+      menuItemId: null, // No menu item reference for custom items
+      name: item.name,
+      image: '/images/product/custom-item.jpg',
+      description: 'Custom item',
+      portion: item.portion || 'Custom',
+      price,
+      quantity: item.quantity,
+      customizations: [],
+      subtotal,
+      isCustom: true
+    });
+    
+    logger.info(`Added custom item: ${item.name} @ ₹${price} x ${item.quantity}`);
+  });
+
+  // Calculate fees based on order type using settings from database
+  const deliveryFee = orderType === 'DELIVERY' ? (settings.deliveryCharge || 0) : 0;
+  const taxRate = settings.taxRate || 0;
+  const taxAmount = Math.round((itemsTotal + deliveryFee) * (taxRate / 100));
+  const finalAmount = itemsTotal + deliveryFee + taxAmount;
+
+  // Generate order number
+  const orderCount = await Order.countDocuments();
+  const orderNumber = `ORD-${String(orderCount + 1).padStart(6, '0')}`;
+
+  // Create order
+  const order = await Order.create({
+    orderNumber,
+    customer: {
+      id: customer._id,
+      name: customerName,
+      phone: customerPhone,
+      email: customerEmail || '',
+    },
+    items: orderItems,
+    pricing: {
+      itemsTotal,
+      deliveryFee,
+      taxRate,
+      taxAmount,
+      finalAmount,
+    },
+    orderType,
+    placedBy: 'ADMIN',
+    deliveryAddress: orderType === 'DELIVERY' ? deliveryAddress : undefined,
+    paymentMethod: paymentMethod || 'COD',
+    paymentStatus: paymentMethod === 'ONLINE' ? 'PAID' : 'PENDING',
+    status: 'PENDING',
+    statusHistory: [
+      {
+        status: 'PENDING',
+        timestamp: new Date(),
+        updatedBy: req.user._id,
+        notes: `Order created by admin for ${orderType === 'TAKEAWAY' ? 'takeaway' : 'delivery'}`,
+      },
+    ],
+    estimatedPrepTime: 20, // 20 minutes default
+    specialInstructions,
+  });
+
+  logger.info(`Admin ${req.user.email.address} created ${orderType} order ${orderNumber} for ${customerName}`);
+
+  // Emit real-time notification (don't let this block response)
+  try {
+    emitOrderUpdate({
+      type: 'new_order',
+      order,
+    });
+  } catch (error) {
+    logger.error('Failed to emit order update:', error);
+  }
+
+  // Notify customer if they have the app (don't let this block response)
+  try {
+    if (customer.fcmTokens && customer.fcmTokens.length > 0) {
+      emitUserNotification(customer._id.toString(), {
+        type: 'order_placed',
+        title: 'Order Placed',
+        message: `Your ${orderType.toLowerCase()} order ${orderNumber} has been placed`,
+        orderId: order._id,
+      });
+    }
+  } catch (error) {
+    logger.error('Failed to send customer notification:', error);
+  }
+
+  res.status(201).json({
+    status: 'success',
+    message: `${orderType} order created successfully`,
+    data: { order },
+  });
+});
+
+exports.completeTakeawayOrder = catchAsync(async (req, res, next) => {
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    return next(new AppError('Order not found', 404));
+  }
+
+  if (order.orderType !== 'TAKEAWAY') {
+    return next(new AppError('This endpoint is only for takeaway orders', 400));
+  }
+
+  if (order.status === 'COMPLETED' || order.status === 'DELIVERED') {
+    return next(new AppError('Order already completed', 400));
+  }
+
+  order.status = 'DELIVERED';
+  order.paymentStatus = 'PAID';
+  order.statusHistory.push({
+    status: 'DELIVERED',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: 'Takeaway order delivered - customer picked up order',
+  });
+
+  await order.save();
+
+  logger.info(`Takeaway order ${order.orderNumber} marked as delivered by admin`);
+
+  // Emit socket notification if customer exists
+  if (order.customer && order.customer.id) {
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_DELIVERED',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order has been delivered',
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Takeaway order marked as delivered',
+    data: { order },
+  });
+});
+
+exports.acceptOrder = catchAsync(async (req, res, next) => {
+  logger.info('\n===== ACCEPT ORDER REQUEST =====');
+  logger.info(`📦 Order ID: ${req.params.id}`);
+  logger.info(`👤 Admin: ${req.user.email}`);
+
+  // Start a session for transaction
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // Use findOneAndUpdate with atomic operation to prevent race conditions
+    const order = await Order.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        status: 'PENDING', // Only update if status is PENDING
+      },
+      {
+        $set: { status: 'ACCEPTED' },
+        $push: {
+          statusHistory: {
+            status: 'ACCEPTED',
+            timestamp: new Date(),
+            updatedBy: req.user._id,
+            notes: 'Order accepted by admin',
+          },
+        },
+      },
+      {
+        new: true, // Return updated document
+        runValidators: true,
+        session, // Use transaction session
+      }
+    );
+
+    if (!order) {
+      await session.abortTransaction();
+      session.endSession();
+      
+      // Check if order exists
+      const existingOrder = await Order.findById(req.params.id);
+      if (!existingOrder) {
+        logger.error(`❌ Order not found: ${req.params.id}`);
+        return next(new AppError('Order not found', 404));
+      }
+      
+      // Order exists but status is not PENDING
+      logger.warn(`⚠️ Cannot accept - Order ${existingOrder.orderNumber} status is ${existingOrder.status}, expected PENDING`);
+      return next(new AppError(`Order is already ${existingOrder.status.toLowerCase()}. Only pending orders can be accepted.`, 400));
+    }
+
+    // Commit transaction
+    await session.commitTransaction();
+    session.endSession();
+
+    logger.info(`✅ Order ${order.orderNumber} status changed: PENDING → ACCEPTED`);
+
+    // Emit socket event to customer (only if customer.id exists)
+    // Do this after transaction to avoid rollback issues
+    try {
+      if (order.customer && order.customer.id) {
+        emitUserNotification(order.customer.id.toString(), {
+          type: 'ORDER_ACCEPTED',
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          message: 'Your order has been accepted and is being prepared',
+        });
+        logger.info(`📤 Socket notification sent to customer: ${order.customer.id}`);
+      } else {
+        logger.info(`📤 No customer ID - skipping socket notification (admin-created order)`);
+      }
+    } catch (notifError) {
+      logger.error('Failed to send notification (non-critical):', notifError);
+    }
+
+    logger.info('================================\n');
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Order accepted successfully',
+      data: { order },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    throw error;
+  }
+});
+
+exports.markOrderPreparing = catchAsync(async (req, res, next) => {
+  logger.info('\n===== MARK PREPARING REQUEST =====');
+  logger.info(`📦 Order ID: ${req.params.id}`);
+  logger.info(`👤 Admin: ${req.user.email}`);
+
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    logger.error(`❌ Order not found: ${req.params.id}`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`📋 Order Number: ${order.orderNumber}`);
+  logger.info(`📊 Current Status: ${order.status}`);
+
+  if (order.status !== 'ACCEPTED') {
+    logger.warn(`⚠️  Cannot mark preparing - Order status is ${order.status}, expected ACCEPTED`);
+    return next(new AppError('Only accepted orders can be marked as preparing', 400));
+  }
+
+  order.status = 'PREPARING';
+  order.statusHistory.push({
+    status: 'PREPARING',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: 'Kitchen started preparing the order',
+  });
+
+  await order.save();
+
+  logger.info(`✅ Order ${order.orderNumber} status changed: ACCEPTED → PREPARING`);
+
+  // Emit socket event to customer (only if customer.id exists)
+  if (order.customer && order.customer.id) {
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_PREPARING',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order is being prepared',
+    });
+    logger.info(`📤 Socket notification sent to customer`);
+  } else {
+    logger.info(`📤 No customer ID - skipping socket notification`);
+  }
+
+  logger.info('================================\n');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order marked as preparing',
+    data: { order },
+  });
+});
+
+exports.markOrderReady = catchAsync(async (req, res, next) => {
+  logger.info('\n===== MARK READY REQUEST =====');
+  logger.info(`📦 Order ID: ${req.params.id}`);
+  logger.info(`👤 Admin: ${req.user.email}`);
+
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    logger.error(`❌ Order not found: ${req.params.id}`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`📋 Order Number: ${order.orderNumber}`);
+  logger.info(`📊 Current Status: ${order.status}`);
+  logger.info(`📦 Order Type: ${order.orderType}`);
+
+  if (order.status !== 'ACCEPTED') {
+    logger.warn(`⚠️  Cannot mark ready - Order status is ${order.status}, expected ACCEPTED`);
+    return next(new AppError('Only accepted orders can be marked as ready', 400));
+  }
+
+  // For TAKEAWAY orders, mark as READY_FOR_PICKUP instead of READY
+  if (order.orderType === 'TAKEAWAY') {
+    order.status = 'READY_FOR_PICKUP';
+    order.statusHistory.push({
+      status: 'READY_FOR_PICKUP',
+      timestamp: new Date(),
+      updatedBy: req.user._id,
+      notes: 'Takeaway order ready for customer pickup',
+    });
+
+    await order.save();
+
+    logger.info(`✅ Takeaway order ${order.orderNumber} status changed: ACCEPTED → READY_FOR_PICKUP`);
+
+    // Emit socket event to customer (only if customer.id exists)
+    if (order.customer && order.customer.id) {
+      emitUserNotification(order.customer.id.toString(), {
+        type: 'ORDER_READY_FOR_PICKUP',
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        message: 'Your order is ready for pickup',
+      });
+      logger.info(`📤 Socket notification sent to customer`);
+    } else {
+      logger.info(`📤 No customer ID - skipping socket notification`);
+    }
+
+    logger.info('================================\n');
+
+    return res.status(200).json({
+      status: 'success',
+      message: 'Takeaway order marked as ready for pickup',
+      data: { order },
+    });
+  }
+
+  order.status = 'READY';
+  order.statusHistory.push({
+    status: 'READY',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: 'Order prepared and ready for pickup by delivery agent',
+  });
+
+  await order.save();
+
+  logger.info(`✅ Order ${order.orderNumber} status changed: ACCEPTED → READY`);
+
+  // Emit socket event to customer (only if customer.id exists)
+  if (order.customer && order.customer.id) {
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_READY',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order is ready and will be picked up soon',
+    });
+  }
+
+  // Emit event to all delivery agents that a new order is available
+  emitOrderUpdate(order._id.toString(), {
+    type: 'ORDER_AVAILABLE',
+    status: 'READY',
+    orderNumber: order.orderNumber,
+    message: 'New order available for pickup',
+  });
+
+  logger.info(`📤 Socket notifications sent to customer and delivery agents`);
+  logger.info(`🚚 Order now available for delivery agents to claim`);
+  logger.info('================================\n');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order marked as ready',
+    data: { order },
+  });
+});
+
+exports.cancelOrder = catchAsync(async (req, res, next) => {
+  const { reason } = req.body;
+  
+  logger.info(`
+================================
+===== CANCEL ORDER REQUEST =====
+================================
+📦 Order ID: ${req.params.id}
+👤 Admin: ${req.user.email}
+📝 Reason: ${reason || 'Not provided'}
+================================`);
+  
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    logger.error(`❌ Order not found: ${req.params.id}`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`📋 Current Status: ${order.status}`);
+  logger.info(`📋 Order Number: ${order.orderNumber}`);
+
+  if (['DELIVERED', 'COMPLETED', 'CANCELLED'].includes(order.status)) {
+    logger.warn(`⚠️  Cannot cancel order - already ${order.status}`);
+    return next(new AppError('Cannot cancel this order', 400));
+  }
+
+  order.status = 'CANCELLED';
+  order.statusHistory.push({
+    status: 'CANCELLED',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: reason || 'Order cancelled by admin',
+  });
+
+  await order.save();
+
+  logger.info(`✅ Order ${order.orderNumber} status changed: ${order.statusHistory[order.statusHistory.length - 2]?.status || 'UNKNOWN'} → CANCELLED`);
+
+  // Emit socket event to customer (only if customer.id exists)
+  if (order.customer && order.customer.id) {
+    logger.info(`📤 Emitting socket notification to customer: ${order.customer.id}`);
+    emitUserNotification(order.customer.id.toString(), {
+      type: 'ORDER_CANCELLED',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Your order has been cancelled',
+    });
+  } else {
+    logger.info(`📤 No customer ID - skipping socket notification`);
+  }
+
+  // If order was assigned to delivery agent, notify them
+  if (order.deliveryPartner && order.deliveryPartner.id) {
+    logger.info(`📤 Emitting socket notification to delivery agent: ${order.deliveryPartner.id}`);
+    emitUserNotification(order.deliveryPartner.id.toString(), {
+      type: 'ORDER_CANCELLED',
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      message: 'Order has been cancelled',
+    });
+  }
+
+  logger.info('================================\n');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order cancelled successfully',
+    data: { order },
+  });
+});
+
+exports.createGuestOrder = catchAsync(async (req, res, next) => {
+  const {
+    customer,
+    items,
+    orderType,
+    deliveryAddress,
+    paymentMethod = 'COD',
+  } = req.body;
+
+  // Validation
+  if (!customer || !customer.name || !customer.phone) {
+    return next(new AppError('Customer name and phone are required', 400));
+  }
+
+  if (!items || items.length === 0) {
+    return next(new AppError('Order must contain at least one item', 400));
+  }
+
+  if (orderType === 'DELIVERY' && !deliveryAddress) {
+    return next(new AppError('Delivery address is required for delivery orders', 400));
+  }
+
+  // Validate menu items
+  const menuItemIds = items.map((item) => item.menuItem);
+  const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
+
+  if (menuItems.length !== menuItemIds.length) {
+    return next(new AppError('Some menu items do not exist', 400));
+  }
+
+  // Check if all items are available
+  const unavailableItems = menuItems.filter(item => !item.isAvailable);
+  if (unavailableItems.length > 0) {
+    return next(new AppError(`Some menu items are not available: ${unavailableItems.map(i => i.name).join(', ')}`, 400));
+  }
+
+  // Get settings for tax and delivery charges
+  const settings = await Settings.getSettings();
+
+  // Create or find customer user
+  let customerUser = await User.findOne({ 'phone.number': customer.phone });
+
+  if (!customerUser) {
+    const nameParts = customer.name.trim().split(' ');
+    const firstName = nameParts[0] || 'Customer';
+    const lastName = nameParts.slice(1).join(' ') || 'Guest';
+    
+    const email = `${customer.phone}@guest.thetiptop.com`;
+    const randomPassword = Math.random().toString(36).slice(-10) + Math.random().toString(36).slice(-10);
+    
+    customerUser = await User.create({
+      name: {
+        first: firstName,
+        last: lastName,
+      },
+      phone: {
+        number: customer.phone,
+        isVerified: false,
+      },
+      email: {
+        address: email,
+        isVerified: true,
+      },
+      password: randomPassword,
+      role: 'customer',
+      isActive: true,
+    });
+    logger.info(`Created new guest customer: ${customer.name} (${customer.phone})`);
+  }
+
+  // Calculate pricing
+  let itemsTotal = 0;
+  const orderItems = items.map((item) => {
+    const menuItem = menuItems.find((mi) => mi._id.toString() === item.menuItem);
+    const portion = item.portion || 'Full';
+    
+    let price;
+    if (item.price) {
+      price = item.price;
+    } else {
+      const variant = menuItem.priceVariants?.find(v => v.quantity === portion);
+      price = variant?.price || menuItem.portions?.[portion] || menuItem.basePrice;
+    }
+
+    const itemTotal = price * item.quantity;
+    itemsTotal += itemTotal;
+
+    return {
+      menuItem: menuItem._id,
+      name: menuItem.name,
+      portion,
+      quantity: item.quantity,
+      price,
+      total: itemTotal,
+    };
+  });
+
+  // Calculate tax and delivery
+  const taxAmount = settings.taxRate ? (itemsTotal * settings.taxRate) / 100 : 0;
+  const deliveryCharge = orderType === 'DELIVERY' ? settings.deliveryCharge || 0 : 0;
+  const total = itemsTotal + taxAmount + deliveryCharge;
+
+  // Create order
+  const order = await Order.create({
+    customer: {
+      id: customerUser._id,
+      name: customer.name,
+      phone: customer.phone,
+    },
+    items: orderItems,
+    pricing: {
+      itemsTotal,
+      taxRate: settings.taxRate || 0,
+      taxAmount,
+      deliveryCharge,
+      total,
+    },
+    orderType,
+    deliveryAddress: orderType === 'DELIVERY' ? deliveryAddress : undefined,
+    paymentMethod,
+    paymentStatus: 'PENDING',
+    status: 'NEW',
+    statusHistory: [
+      {
+        status: 'NEW',
+        timestamp: new Date(),
+        notes: 'Guest order created',
+      },
+    ],
+  });
+
+  logger.info(`✅ Guest order created: ${order.orderNumber} for ${customer.name}`);
+
+  // Emit socket event for admin
+  emitOrderUpdate({
+    type: 'NEW_ORDER',
+    order: order,
+  });
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Order placed successfully',
+    data: { order },
+  });
+});
+
+exports.getTodayOrders = catchAsync(async (req, res, next) => {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
+
+  // Define active and inactive statuses (UPPERCASE to match DB)
+  const activeStatuses = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'];
+  const inactiveStatuses = ['DELIVERED', 'CANCELLED', 'REJECTED'];
+
+  // Fetch ALL active/in-progress orders WITH full details (regardless of date)
+  // This prevents orders from disappearing after midnight before being completed
+  const activeOrders = await Order.find({
+    status: { $in: activeStatuses }
+  })
+    .select('orderNumber customer items pricing status orderType deliveryPartner createdAt deliveryAddress')
+    .lean()
+    .sort({ createdAt: -1 });
+
+  // Fetch only TODAY'S inactive orders (completed/cancelled) WITHOUT details (summary only)
+  const inactiveOrders = await Order.find({
+    createdAt: { $gte: startOfDay, $lte: endOfDay },
+    status: { $in: inactiveStatuses }
+  })
+    .select('orderNumber customer.name customer.phone pricing.finalAmount status orderType createdAt')
+    .lean()
+    .sort({ createdAt: -1 });
+
+  // Transform active orders
+  const transformedActiveOrders = activeOrders.map(order => {
+    // Transform status to match UI (capitalize first letter)
+    const statusMap = {
+      'PENDING': 'New',
+      'pending': 'New',
+      'ACCEPTED': 'Accepted',
+      'accepted': 'Accepted',
+      'PREPARING': 'Preparing',
+      'preparing': 'Preparing',
+      'READY': 'Ready',
+      'ready': 'Ready',
+      'READY_FOR_PICKUP': 'Ready for Pickup',
+      'ready_for_pickup': 'Ready for Pickup',
+      'OUT_FOR_DELIVERY': 'Out for Delivery',
+      'out_for_delivery': 'Out for Delivery',
+      'DELIVERED': 'Delivered',
+      'delivered': 'Delivered',
+      'CANCELLED': 'Canceled',
+      'cancelled': 'Canceled',
+      'REJECTED': 'Canceled',
+      'rejected': 'Canceled'
+    };
+
+    return {
+      id: order._id.toString(),
+      orderId: order.orderNumber,
+      customer: `${order.customer?.name || 'N/A'}`,
+      phone: order.customer?.phone || 'N/A',
+      orderType: order.orderType || 'DELIVERY', // Include orderType - critical for UI logic
+      items: order.items?.map(item => ({
+        name: item.name,
+        portion: item.portion || '',
+        quantity: item.quantity,
+        price: item.subtotal
+      })) || [],
+      itemCount: order.items?.length || 0,
+      total: order.pricing?.finalAmount || 0,
+      pricing: {
+        itemsTotal: order.pricing?.itemsTotal || 0,
+        deliveryFee: order.pricing?.deliveryFee || 0,
+        gst: order.pricing?.gst || 0,
+        gstRate: order.pricing?.gstRate || 0,
+        discount: order.pricing?.discount || 0,
+        finalAmount: order.pricing?.finalAmount || 0
+      },
+      status: statusMap[order.status] || order.status,
+      deliveryPartner: order.deliveryPartner ? {
+        id: order.deliveryPartner._id?.toString() || order.deliveryPartner.id,
+        name: order.deliveryPartner.name,
+        phone: order.deliveryPartner.phone,
+        vehicleNumber: order.deliveryPartner.vehicleNumber
+      } : null,
+      date: order.createdAt.toISOString().split('T')[0],
+      time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      address: {
+        street: order.deliveryAddress?.street || '',
+        city: order.deliveryAddress?.city || '',
+        state: order.deliveryAddress?.state || '',
+        zip: order.deliveryAddress?.zip || order.deliveryAddress?.postalCode || ''
+      },
+      image: order.items?.[0]?.image || ''
+    };
+  });
+
+  // Transform inactive orders (summary only)
+  const transformedInactiveOrders = inactiveOrders.map(order => {
+    const statusMap = {
+      'PENDING': 'New',
+      'pending': 'New',
+      'ACCEPTED': 'Accepted',
+      'accepted': 'Accepted',
+      'PREPARING': 'Preparing',
+      'preparing': 'Preparing',
+      'READY': 'Ready',
+      'ready': 'Ready',
+      'OUT_FOR_DELIVERY': 'Out for Delivery',
+      'out_for_delivery': 'Out for Delivery',
+      'DELIVERED': 'Delivered',
+      'delivered': 'Delivered',
+      'CANCELLED': 'Canceled',
+      'cancelled': 'Canceled',
+      'REJECTED': 'Canceled',
+      'rejected': 'Canceled'
+    };
+
+    return {
+      id: order._id.toString(),
+      orderId: order.orderNumber,
+      customer: `${order.customer?.name || 'N/A'}`,
+      phone: order.customer?.phone || 'N/A',
+      orderType: order.orderType || 'DELIVERY',
+      items: [], // Will be populated on expand
+      itemCount: 0,
+      total: order.pricing?.finalAmount || 0,
+      status: statusMap[order.status] || order.status,
+      date: order.createdAt.toISOString().split('T')[0],
+      time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    };
+  });
+
+  // Group by status (using transformed status names)
+  const groupedOrders = {
+    pending: transformedActiveOrders.filter(o => o.status === 'New'),
+    accepted: transformedActiveOrders.filter(o => o.status === 'Accepted'),
+    preparing: transformedActiveOrders.filter(o => o.status === 'Preparing'),
+    ready: transformedActiveOrders.filter(o => o.status === 'Ready'),
+    ready_for_pickup: transformedActiveOrders.filter(o => o.status === 'Ready for Pickup'),
+    out_for_delivery: transformedActiveOrders.filter(o => o.status === 'Out for Delivery'),
+    delivered: transformedInactiveOrders.filter(o => o.status === 'Delivered'),
+    cancelled: transformedInactiveOrders.filter(o => o.status === 'Canceled')
+  };
+
+  // Log for debugging - include count of orders from previous days
+  const ordersFromPreviousDays = activeOrders.filter(order => {
+    const orderDate = new Date(order.createdAt);
+    orderDate.setHours(0, 0, 0, 0);
+    return orderDate < startOfDay;
+  }).length;
+  
+  logger.info(`📊 Today's Orders Summary: Pending=${groupedOrders.pending.length}, Accepted=${groupedOrders.accepted.length}, Ready=${groupedOrders.ready.length}, ReadyForPickup=${groupedOrders.ready_for_pickup.length}, OutForDelivery=${groupedOrders.out_for_delivery.length}, Delivered=${groupedOrders.delivered.length}`);
+  
+  if (ordersFromPreviousDays > 0) {
+    logger.info(`⚠️  Including ${ordersFromPreviousDays} in-progress order(s) from previous day(s) to prevent midnight loss`);
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: groupedOrders
+  });
+});
+
+exports.getAllOrders = catchAsync(async (req, res, next) => {
+  console.log('🔵 [getAllOrders - NEW CONTROLLER] Called with page:', req.query.page, 'limit:', req.query.limit);
+  
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
+
+  // Get total count
+  const totalOrders = await Order.countDocuments();
+  console.log('🔵 [getAllOrders - NEW CONTROLLER] Total orders in DB:', totalOrders);
+
+  // Fetch orders (summary only but include items for count)
+  const orders = await Order.find()
+    .select('orderNumber customer.name customer.phone pricing.finalAmount status orderType createdAt items')
+    .lean()
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit);
+
+  // Transform orders
+  const statusMap = {
+    'PENDING': 'New',
+    'pending': 'New',
+    'ACCEPTED': 'Accepted',
+    'accepted': 'Accepted',
+    'PREPARING': 'Preparing',
+    'preparing': 'Preparing',
+    'READY': 'Ready',
+    'ready': 'Ready',
+    'READY_FOR_PICKUP': 'Ready for Pickup',
+    'ready_for_pickup': 'Ready for Pickup',
+    'OUT_FOR_DELIVERY': 'Ready',
+    'out_for_delivery': 'Ready',
+    'DELIVERED': 'Delivered',
+    'delivered': 'Delivered',
+    'CANCELLED': 'Canceled',
+    'cancelled': 'Canceled',
+    'REJECTED': 'Canceled',
+    'rejected': 'Canceled'
+  };
+
+  const transformedOrders = orders.map(order => ({
+    id: order._id.toString(),
+    orderId: order.orderNumber,
+    customer: `${order.customer?.name || 'N/A'}`,
+    phone: order.customer?.phone || 'N/A',
+    orderType: order.orderType || 'DELIVERY',
+    items: [], // Will be populated on expand
+    itemCount: order.items?.length || 0,
+    total: order.pricing?.finalAmount || 0,
+    status: statusMap[order.status] || order.status,
+    date: order.createdAt.toISOString().split('T')[0],
+    time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+  }));
+
+  console.log('🔵 [getAllOrders - NEW CONTROLLER] Transformed orders count:', transformedOrders.length);
+  console.log('🔵 [getAllOrders - NEW CONTROLLER] Sample order:', transformedOrders[0]);
+  console.log('🔵 [getAllOrders - NEW CONTROLLER] Pagination:', { currentPage: page, totalPages: Math.ceil(totalOrders / limit), totalOrders, limit });
+
+  // Add no-cache headers to prevent browser caching
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  });
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      orders: transformedOrders,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalOrders / limit),
+        totalOrders,
+        limit
+      }
+    }
+  });
+});
+
+exports.getOrderDetails = catchAsync(async (req, res, next) => {
+  const order = await Order.findById(req.params.id)
+    .select('orderNumber customer items pricing status orderType createdAt deliveryAddress')
+    .lean();
+
+  if (!order) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Order not found'
+    });
+  }
+
+  // Transform to match UI format
+  const statusMap = {
+    'PENDING': 'New',
+    'pending': 'New',
+    'ACCEPTED': 'Accepted',
+    'accepted': 'Accepted',
+    'PREPARING': 'Preparing',
+    'preparing': 'Preparing',
+    'READY': 'Ready',
+    'ready': 'Ready',
+    'READY_FOR_PICKUP': 'Ready for Pickup',
+    'ready_for_pickup': 'Ready for Pickup',
+    'OUT_FOR_DELIVERY': 'Ready',
+    'out_for_delivery': 'Ready',
+    'DELIVERED': 'Delivered',
+    'delivered': 'Delivered',
+    'CANCELLED': 'Canceled',
+    'cancelled': 'Canceled',
+    'REJECTED': 'Canceled',
+    'rejected': 'Canceled'
+  };
+
+  const transformedOrder = {
+    id: order._id.toString(),
+    orderId: order.orderNumber,
+    customer: `${order.customer?.name || 'N/A'}`,
+    phone: order.customer?.phone || 'N/A',
+    orderType: order.orderType || 'DELIVERY',
+    items: order.items?.map(item => ({
+      name: item.name,
+      portion: item.portion || '',
+      quantity: item.quantity,
+      price: item.subtotal
+    })) || [],
+    itemCount: order.items?.length || 0,
+    total: order.pricing?.finalAmount || 0,
+    pricing: {
+      itemsTotal: order.pricing?.itemsTotal || 0,
+      deliveryFee: order.pricing?.deliveryFee || 0,
+      gst: order.pricing?.gst || 0,
+      gstRate: order.pricing?.gstRate || 0,
+      discount: order.pricing?.discount || 0,
+      finalAmount: order.pricing?.finalAmount || 0
+    },
+    status: statusMap[order.status] || order.status,
+    date: order.createdAt.toISOString().split('T')[0],
+    time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+    address: {
+      street: order.deliveryAddress?.street || '',
+      city: order.deliveryAddress?.city || '',
+      state: order.deliveryAddress?.state || '',
+      zip: order.deliveryAddress?.zip || order.deliveryAddress?.postalCode || ''
+    },
+    image: order.items?.[0]?.image || ''
+  };
+
+  console.log('\n📦 ORDER DETAILS DEBUG (Backend):');
+  console.log('Order ID:', order._id);
+  console.log('Order Number:', order.orderNumber);
+  console.log('Raw pricing from DB:', JSON.stringify(order.pricing, null, 2));
+  console.log('Transformed pricing:', JSON.stringify(transformedOrder.pricing, null, 2));
+
+  res.status(200).json({
+    status: 'success',
+    data: transformedOrder
+  });
+});
+
+exports.getPOSMenuItems = catchAsync(async (req, res, next) => {
+  const { page = 1, limit = 50, category, search } = req.query;
+
+  // Build query - only available items (isActive not checked, only isAvailable matters for ordering)
+  const query = { isAvailable: true };
+
+  if (category && category !== 'All') {
+    query.categories = category;
+  }
+
+  if (search) {
+    query.name = { $regex: search, $options: 'i' };
+  }
+
+  console.log('\n🔍 POS Menu Query:', JSON.stringify(query));
+  
+  // Get items with minimal fields for fast loading
+  const items = await MenuItem.find(query)
+    .select('name image categories priceVariants isAvailable')
+    .skip((page - 1) * limit)
+    .limit(parseInt(limit))
+    .lean();
+
+  const total = await MenuItem.countDocuments(query);
+  
+  // Log items by category
+  const itemsByCategory = items.reduce((acc, item) => {
+    const cat = item.categories?.find(c => c !== 'All') || 'Uncategorized';
+    acc[cat] = (acc[cat] || 0) + 1;
+    return acc;
+  }, {});
+  
+  console.log('📦 POS Items Found:', items.length, 'Total:', total);
+  console.log('📊 By Category:', itemsByCategory);
+  
+  // Check unavailable items for debugging
+  if (!category || category === 'All' || category === 'Biryani') {
+    const unavailableQuery = { isAvailable: false };
+    if (category && category !== 'All') {
+      unavailableQuery.categories = category;
+    }
+    const unavailableItems = await MenuItem.find(unavailableQuery).select('name categories isAvailable').lean();
+    if (unavailableItems.length > 0) {
+      console.log('⚠️  Unavailable Items (not shown in POS):', unavailableItems.length);
+      unavailableItems.forEach(item => {
+        console.log(`   - ${item.name} (${item.categories?.join(', ')})`);
+      });
+    }
+  }
+  console.log('');
+
+  // Transform to POS format
+  const posItems = items.map(item => {
+    // Get the first category that's not "All"
+    const actualCategory = item.categories?.find(cat => cat !== 'All') || item.categories?.[0] || 'Other';
+    
+    return {
+      id: item._id.toString(),
+      name: item.name,
+      image: item.image || '/images/product/placeholder.jpg',
+      category: actualCategory,
+      priceVariants: item.priceVariants || [],
+      isAvailable: item.isAvailable
+    };
+  });
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      items: posItems,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        limit: parseInt(limit)
+      }
+    }
+  });
+});
+
+exports.createAdminOrder = catchAsync(async (req, res, next) => {
+  console.log('\n📦 Creating admin order...');
+  console.log('Request body:', JSON.stringify(req.body, null, 2));
+  
+  const {
+    items,
+    customer,
+    deliveryAddress,
+    orderType,
+    paymentMethod = 'COD' // Cash On Delivery
+  } = req.body;
+
+  // Validate required fields
+  if (!items || items.length === 0) {
+    console.log('❌ Validation failed: No items');
+    return next(new AppError('Please add items to the order', 400));
+  }
+
+  if (!customer || !customer.name || !customer.phone) {
+    console.log('❌ Validation failed: Missing customer info');
+    return next(new AppError('Customer name and phone are required', 400));
+  }
+
+  if (orderType === 'DELIVERY' && !deliveryAddress) {
+    console.log('❌ Validation failed: No delivery address for DELIVERY order');
+    return next(new AppError('Delivery address is required for delivery orders', 400));
+  }
+
+  // Separate regular menu items from custom/open menu items
+  console.log('🔍 Validating menu items...');
+  const regularItems = items.filter(item => item.menuItem && item.menuItem !== 'custom');
+  const customItems = items.filter(item => !item.menuItem || item.menuItem === 'custom');
+  
+  console.log(`📦 Regular items: ${regularItems.length}, Custom items: ${customItems.length}`);
+
+  // Validate regular menu items
+  let menuItems = [];
+  if (regularItems.length > 0) {
+    const menuItemIds = regularItems.map(item => item.menuItem);
+    menuItems = await MenuItem.find({ _id: { $in: menuItemIds } }).lean();
+
+    if (menuItems.length !== menuItemIds.length) {
+      console.log('❌ Some menu items not found');
+      return next(new AppError('Some menu items not found', 404));
+    }
+    console.log(`✅ All ${menuItems.length} regular menu items found`);
+  }
+
+  // Calculate pricing
+  let itemsTotal = 0;
+  const orderItems = [];
+  
+  // Process regular menu items
+  regularItems.forEach(item => {
+    const menuItem = menuItems.find(m => m._id.toString() === item.menuItem);
+    
+    let itemPrice = item.price;
+    // If price not provided, find it from variants or base price
+    if (!itemPrice) {
+      if (item.portion && menuItem.priceVariants) {
+        const variant = menuItem.priceVariants.find(v => v.quantity === item.portion);
+        itemPrice = variant ? variant.price : menuItem.price;
+      } else {
+        itemPrice = menuItem.price;
+      }
+    }
+
+    const subtotal = itemPrice * item.quantity;
+    itemsTotal += subtotal;
+
+    orderItems.push({
+      menuItemId: menuItem._id,
+      name: menuItem.name,
+      image: menuItem.image,
+      portion: item.portion || 'Regular',
+      quantity: item.quantity,
+      price: itemPrice,
+      subtotal
+    });
+  });
+  
+  // Process custom/open menu items
+  customItems.forEach(item => {
+    if (!item.name || !item.price) {
+      throw new AppError('Custom items must have name and price', 400);
+    }
+    
+    const itemPrice = parseFloat(item.price);
+    const subtotal = itemPrice * item.quantity;
+    itemsTotal += subtotal;
+
+    orderItems.push({
+      menuItemId: null, // No menu item reference for custom items
+      name: item.name,
+      image: '/images/product/custom-item.jpg',
+      portion: item.portion || 'Custom',
+      quantity: item.quantity,
+      price: itemPrice,
+      subtotal,
+      isCustom: true
+    });
+    console.log(`✅ Added custom item: ${item.name} @ ₹${itemPrice} x ${item.quantity}`);
+  });
+
+  // Get settings for tax and delivery
+  console.log('⚙️ Fetching settings...');
+  const settings = await Settings.findOne();
+  console.log('Settings found:', settings ? 'Yes' : 'No');
+  
+  // Use taxRate and deliveryCharge from Settings model
+  const taxRate = settings?.taxRate || 0;
+  const deliveryFee = orderType === 'DELIVERY' ? (settings?.deliveryCharge || 0) : 0;
+  
+  console.log(`💰 Pricing: itemsTotal=${itemsTotal}, taxRate=${taxRate}%, deliveryFee=${deliveryFee}`);
+
+  const tax = (itemsTotal * taxRate) / 100;
+  const finalAmount = itemsTotal + tax + deliveryFee;
+  
+  console.log(`💵 Final calculation: ${itemsTotal} + ${tax} (tax) + ${deliveryFee} (delivery) = ${finalAmount}`);
+
+  // Generate order number
+  const orderCount = await Order.countDocuments();
+  const orderNumber = `ORD${String(orderCount + 1).padStart(6, '0')}`;
+  console.log(`📋 Order number generated: ${orderNumber}`);
+
+  // Create order
+  console.log('💾 Creating order in database...');
+  const order = await Order.create({
+    orderNumber,
+    customer: {
+      // No customer.id for admin orders - they're walk-in/phone customers
+      name: customer.name,
+      phone: customer.phone,
+      email: customer.email || ''
+    },
+    items: orderItems,
+    pricing: {
+      itemsTotal,
+      deliveryFee,
+      gst: tax,
+      gstRate: taxRate,
+      discount: 0,
+      finalAmount
+    },
+    deliveryAddress: orderType === 'DELIVERY' ? {
+      street: deliveryAddress.street,
+      city: deliveryAddress.city,
+      state: deliveryAddress.state,
+      zipCode: deliveryAddress.zipCode
+    } : undefined,
+    orderType: orderType || 'DELIVERY',
+    paymentMethod,
+    paymentStatus: paymentMethod === 'COD' ? 'PENDING' : 'PAID',
+    status: 'PENDING',
+    placedBy: 'ADMIN',
+    placedByUser: req.user?._id,
+    estimatedDeliveryTime: new Date(Date.now() + 45 * 60000) // 45 minutes
+  });
+  
+  console.log(`✅ Order created successfully: ${order._id}\n`);
+
+  // Emit socket event for new order
+  try {
+    emitNewOrder(order);
+  } catch (error) {
+    logger.error('Socket emit error:', error);
+  }
+
+  logger.info(`✅ Admin order created: ${orderNumber}`);
+
+  res.status(201).json({
+    status: 'success',
+    data: {
+      order: {
+        id: order._id,
+        orderNumber: order.orderNumber,
+        customer: order.customer,
+        items: order.items,
+        pricing: order.pricing,
+        status: order.status,
+        orderType: order.orderType
+      }
+    }
+  });
+});
+
+exports.updateOrderStatus = catchAsync(async (req, res, next) => {
+  const { status } = req.body;
+  
+  console.log(`\n📦 Updating order ${req.params.id}`);
+  console.log(`   Current request status: ${status}`);
+  console.log(`   Valid enum values: PENDING, ACCEPTED, READY, ASSIGNED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED, COMPLETED`);
+  
+  const order = await Order.findByIdAndUpdate(
+    req.params.id,
+    { 
+      status,
+      $push: {
+        statusHistory: {
+          status,
+          timestamp: new Date(),
+          updatedBy: req.user?._id
+        }
+      }
+    },
+    { new: true, runValidators: true }
+  );
+
+  if (!order) {
+    console.log(`❌ Order not found: ${req.params.id}\n`);
+    return res.status(404).json({
+      status: 'error',
+      message: 'Order not found'
+    });
+  }
+
+  console.log(`✅ Order status updated successfully to: ${order.status}\n`);
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      orderId: order.orderNumber,
+      newStatus: order.status
+    }
+  });
+});
+
+/* =====================================================
+   CUSTOMER RELATED ORDER CONTROLLERS
+===================================================== */
+
 exports.createOrder = catchAsync(async (req, res, next) => {
   const {
     items,
@@ -44,7 +1415,6 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   logger.info(`Received ${menuItemIds.length} menu item IDs: ${menuItemIds.join(', ')}`);
   
   // Convert to ObjectIds and remove duplicates
-  const mongoose = require('mongoose');
   const uniqueIds = [...new Set(menuItemIds)];
   logger.info(`Unique IDs after deduplication: ${uniqueIds.length}`);
   
@@ -125,7 +1495,7 @@ exports.createOrder = catchAsync(async (req, res, next) => {
       name: menuItem.name,
       image: menuItem.image,
       description: menuItem.description,
-      portion: item.portion || '', // Store portion/variant from frontend
+      portion: item.portion || '',
       quantity: item.quantity,
       price: itemPrice,
       customizations: item.customizations || [],
@@ -163,15 +1533,14 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   // Calculate final amount
   const finalAmount = subtotal + deliveryCharges + taxAmount - discountAmount;
 
-  // Generate unique order number (format: ORDDDHHMMSSXXX)
-  // DD = day, HH = hour, MM = minute, SS = second, XXX = 3-digit counter
+  // Generate unique order number
   const now = new Date();
   const day = String(now.getDate()).padStart(2, '0');
   const hour = String(now.getHours()).padStart(2, '0');
   const minute = String(now.getMinutes()).padStart(2, '0');
   const second = String(now.getSeconds()).padStart(2, '0');
   const orderCount = await Order.countDocuments();
-  const counter = String((orderCount + 1) % 1000).padStart(3, '0'); // Keep last 3 digits
+  const counter = String((orderCount + 1) % 1000).padStart(3, '0');
   const orderNumber = `ORD${day}${hour}${minute}${second}${counter}`;
 
   // Determine payment status based on method
@@ -214,7 +1583,7 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     },
   });
 
-  // Update menu item stats for popularity tracking
+  // Update menu item stats
   for (const item of orderItems) {
     await MenuItem.findByIdAndUpdate(
       item.menuItem,
@@ -233,84 +1602,44 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   req.user.customerData.totalSpent += finalAmount;
   await req.user.save({ validateBeforeSave: false });
 
-  logger.info(
-    `✅ Order created: ${order.orderNumber} by ${req.user.email.address} - Amount: ₹${finalAmount}`
-  );
+  logger.info(`✅ Order created: ${order.orderNumber} by ${req.user.email.address} - Amount: ₹${finalAmount}`);
 
-  // ═══════════════════════════════════════════════════════════════
-  // NOTIFICATION FLOW DEBUGGING
-  // ═══════════════════════════════════════════════════════════════
-  
-  logger.info('\n🔔 ===== STARTING NOTIFICATION PROCESS =====');
-  logger.info(`📦 Order: ${order.orderNumber}`);
-  logger.info(`👤 Customer: ${req.user.email.address} (ID: ${req.user._id})`);
-  logger.info(`💰 Amount: ₹${finalAmount}`);
-
-  // Emit real-time notification to customer
+  // Send notifications
   try {
-    logger.info('\n📡 [WEBSOCKET] Emitting to customer...');
     emitUserNotification(req.user._id.toString(), {
       type: 'order_placed',
       title: 'Order Placed Successfully',
       message: `Your order ${order.orderNumber} has been placed successfully`,
       orderId: order._id,
     });
-    logger.info('✅ [WEBSOCKET] Customer notification emitted');
   } catch (err) {
-    logger.error('❌ [WEBSOCKET] Failed to emit customer notification:', err.message);
+    logger.error('Failed to emit customer notification:', err.message);
   }
 
-  // Emit new order event to all admins (for web notifications)
   try {
-    logger.info('\n📡 [WEBSOCKET] Emitting to admins...');
     emitNewOrder(order);
-    logger.info('✅ [WEBSOCKET] Admin notification emitted');
   } catch (err) {
-    logger.error('❌ [WEBSOCKET] Failed to emit new order event:', err.message);
+    logger.error('Failed to emit new order event:', err.message);
   }
 
-  // Send push notification to customer (iOS & Android)
   try {
-    logger.info('\n📱 [PUSH NOTIFICATION] Checking customer device tokens...');
     const deviceTokens = req.user.getActiveDeviceTokens();
-    logger.info(`📱 [PUSH] Customer has ${deviceTokens ? deviceTokens.length : 0} active device token(s)`);
-    
     if (deviceTokens && deviceTokens.length > 0) {
-      logger.info(`📱 [PUSH] Device tokens:`, deviceTokens.map((t, i) => `Token ${i + 1}: ${t.substring(0, 30)}...`));
-      logger.info(`📱 [PUSH] Sending notification to ${deviceTokens.length} device(s) for order ${order.orderNumber}`);
-      
-      for (let i = 0; i < deviceTokens.length; i++) {
-        const token = deviceTokens[i];
-        logger.info(`📱 [PUSH] Sending to device ${i + 1}/${deviceTokens.length}...`);
-        const result = await notificationService.sendOrderNotification(order, token);
-        if (result) {
-          logger.info(`✅ [PUSH] Successfully sent to device ${i + 1}`);
-        } else {
-          logger.error(`❌ [PUSH] Failed to send to device ${i + 1}`);
-        }
+      for (const token of deviceTokens) {
+        await notificationService.sendOrderNotification(order, token);
       }
-    } else {
-      logger.warn(`⚠️  [PUSH] No active device tokens found for user ${req.user._id}`);
-      logger.warn(`⚠️  [PUSH] User needs to login to mobile app to register device token`);
     }
   } catch (err) {
-    logger.error('❌ [PUSH] Failed to send push notification:', err.message);
-    logger.error('❌ [PUSH] Stack trace:', err.stack);
+    logger.error('Failed to send push notification:', err.message);
   }
 
-  // Send notification to all admins
   try {
-    logger.info('\n👨‍💼 [ADMIN PUSH] Checking admin users...');
     const admins = await User.find({ role: 'admin', isActive: true });
-    logger.info(`👨‍💼 [ADMIN PUSH] Found ${admins.length} active admin(s)`);
-    
     for (const admin of admins) {
       const adminTokens = admin.getActiveDeviceTokens();
-      logger.info(`👨‍💼 [ADMIN PUSH] Admin ${admin.email.address} has ${adminTokens ? adminTokens.length : 0} device token(s)`);
-      
       if (adminTokens && adminTokens.length > 0) {
         for (const token of adminTokens) {
-          const result = await notificationService.sendCustomNotification(
+          await notificationService.sendCustomNotification(
             token,
             '🔔 New Order Received!',
             `Order #${order.orderNumber} - ${order.customer.name} - ₹${order.pricing.finalAmount.toFixed(2)}`,
@@ -323,43 +1652,26 @@ exports.createOrder = catchAsync(async (req, res, next) => {
               itemCount: order.items.length.toString(),
             }
           );
-          if (result) {
-            logger.info(`✅ [ADMIN PUSH] Notification sent to ${admin.email.address}`);
-          } else {
-            logger.error(`❌ [ADMIN PUSH] Failed to send to ${admin.email.address}`);
-          }
         }
       }
     }
   } catch (err) {
-    logger.error('❌ [ADMIN PUSH] Failed to send push notification:', err.message);
+    logger.error('Failed to send admin push notification:', err.message);
   }
 
-  // Send email notification to configured emails
   try {
-    logger.info('\n📧 [EMAIL ADMIN] Checking notification emails...');
     if (settings.notificationEmails && settings.notificationEmails.length > 0) {
-      logger.info(`📧 [EMAIL ADMIN] Sending to: ${settings.notificationEmails.join(', ')}`);
-      // Admin emails can be sent using sendEmail method with custom content
       for (const email of settings.notificationEmails) {
-        await emailService.sendOrderConfirmation(orderDetails, email);
+        await emailService.sendOrderConfirmation(order, email);
       }
-      logger.info(`✅ [EMAIL ADMIN] Order notification emails sent to: ${settings.notificationEmails.join(', ')}`);
-    } else {
-      logger.info(`ℹ️  [EMAIL ADMIN] No notification emails configured`);
     }
   } catch (err) {
-    logger.error('❌ [EMAIL ADMIN] Failed to send order notification email:', err.message);
-    // Don't fail the order creation if email fails
+    logger.error('Failed to send order notification email:', err.message);
   }
 
-  // Send order confirmation email to customer
   try {
-    logger.info('\n📧 [EMAIL CUSTOMER] Sending order confirmation...');
     const customerEmail = req.user.email.address;
-    logger.info(`📧 [EMAIL CUSTOMER] Recipient: ${customerEmail}`);
-    
-    const result = await emailService.sendOrderConfirmation(customerEmail, {
+    await emailService.sendOrderConfirmation(customerEmail, {
       orderNumber: order.orderNumber,
       customer: {
         name: `${req.user.name.first} ${req.user.name.last}`,
@@ -376,19 +1688,9 @@ exports.createOrder = catchAsync(async (req, res, next) => {
       deliveryAddress: order.deliveryAddress,
       estimatedDeliveryTime: order.estimatedDeliveryTime,
     });
-    
-    if (result) {
-      logger.info(`✅ [EMAIL CUSTOMER] Order confirmation email sent to: ${customerEmail}`);
-    } else {
-      logger.error(`❌ [EMAIL CUSTOMER] Failed to send email to: ${customerEmail}`);
-    }
   } catch (err) {
-    logger.error('❌ [EMAIL CUSTOMER] Failed to send order confirmation email:', err.message);
-    logger.error('❌ [EMAIL CUSTOMER] Stack trace:', err.stack);
-    // Don't fail the order creation if email fails
+    logger.error('Failed to send order confirmation email:', err.message);
   }
-
-  logger.info('\n🔔 ===== NOTIFICATION PROCESS COMPLETE =====\n');
 
   res.status(201).json({
     status: 'success',
@@ -399,11 +1701,6 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Get all orders for current user
- * GET /api/v1/orders/my-orders
- * Customer only
- */
 exports.getMyOrders = catchAsync(async (req, res, next) => {
   const features = new APIFeatures(
     Order.find({ 'customer.id': req.user._id }),
@@ -426,12 +1723,9 @@ exports.getMyOrders = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Get all orders (admin/delivery)
- * GET /api/v1/orders
- * Admin & Delivery partners
- */
-exports.getAllOrders = catchAsync(async (req, res, next) => {
+// OLD FUNCTION - REPLACED BY ADMIN-SPECIFIC VERSION ABOVE (line 874)
+// This was for delivery partners to see their orders
+exports.getAllOrders_OLD_DELIVERY = catchAsync(async (req, res, next) => {
   let query = Order.find();
 
   // If delivery partner, show only assigned orders
@@ -457,45 +1751,6 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Get order by ID
- * GET /api/v1/orders/:id
- * Customer (own orders), Admin, Delivery (assigned orders)
- */
-exports.getOrderById = catchAsync(async (req, res, next) => {
-  const order = await Order.findById(req.params.id);
-
-  if (!order) {
-    return next(new AppError('Order not found', 404));
-  }
-
-  // Check authorization
-  const isCustomer = order.customer.id.toString() === req.user._id.toString();
-  const isDeliveryPartner =
-    order.deliveryPartner &&
-    order.deliveryPartner.id &&
-    order.deliveryPartner.id.toString() === req.user._id.toString();
-  const isAdmin = req.user.role === 'admin';
-
-  if (!isCustomer && !isDeliveryPartner && !isAdmin) {
-    return next(
-      new AppError('You do not have permission to view this order', 403)
-    );
-  }
-
-  res.status(200).json({
-    status: 'success',
-    data: {
-      order,
-    },
-  });
-});
-
-/**
- * Update order status
- * PATCH /api/v1/orders/:id/status
- * Admin & Delivery partners
- */
 exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   const { status, notes } = req.body;
 
@@ -622,87 +1877,6 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Cancel order
- * PATCH /api/v1/orders/:id/cancel
- * Customer (own orders), Admin
- */
-exports.cancelOrder = catchAsync(async (req, res, next) => {
-  const { reason } = req.body;
-
-  const order = await Order.findById(req.params.id);
-
-  if (!order) {
-    return next(new AppError('Order not found', 404));
-  }
-
-  // Check authorization
-  const isCustomer = order.customer.id.toString() === req.user._id.toString();
-  const isAdmin = req.user.role === 'admin';
-
-  if (!isCustomer && !isAdmin) {
-    return next(
-      new AppError('You do not have permission to cancel this order', 403)
-    );
-  }
-
-  // Check if order can be cancelled
-  if (['delivered', 'cancelled'].includes(order.status)) {
-    return next(
-      new AppError(`Cannot cancel order that is already ${order.status}`, 400)
-    );
-  }
-
-  // Update status to cancelled
-  await order.updateStatus('cancelled', reason || 'Cancelled by customer');
-
-  logger.info(
-    `Order ${order.orderNumber} cancelled by ${req.user.email.address} - Reason: ${reason}`
-  );
-
-  // Send push notification to customer
-  try {
-    const customer = await User.findById(order.customer.id);
-    if (customer) {
-      const customerTokens = customer.getActiveDeviceTokens();
-      
-      if (customerTokens && customerTokens.length > 0) {
-        logger.info(`[CANCEL NOTIFICATION] Sending to customer on ${customerTokens.length} device(s)`);
-        
-        for (const token of customerTokens) {
-          await notificationService.sendCustomNotification(
-            token,
-            '❌ Order Cancelled',
-            `Your order #${order.orderNumber} has been cancelled. ${reason ? 'Reason: ' + reason : ''}`,
-            {
-              type: 'ORDER_CANCELLED',
-              orderId: order._id.toString(),
-              orderNumber: order.orderNumber,
-              reason: reason || '',
-              timestamp: new Date().toISOString(),
-            }
-          );
-        }
-      }
-    }
-  } catch (err) {
-    logger.warn('[CANCEL NOTIFICATION] Failed to send push notification:', err.message);
-  }
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Order cancelled successfully',
-    data: {
-      order,
-    },
-  });
-});
-
-/**
- * Assign delivery partner to order
- * PATCH /api/v1/orders/:id/assign
- * Admin only
- */
 exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
   const { deliveryPartnerId } = req.body;
 
@@ -768,11 +1942,6 @@ exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Get pending orders (not assigned)
- * GET /api/v1/orders/pending/all
- * Admin only
- */
 exports.getPendingOrders = catchAsync(async (req, res, next) => {
   const orders = await Order.findPending();
 
@@ -785,11 +1954,6 @@ exports.getPendingOrders = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Get orders by status
- * GET /api/v1/orders/status/:status
- * Admin & Delivery partners
- */
 exports.getOrdersByStatus = catchAsync(async (req, res, next) => {
   const { status } = req.params;
 
@@ -811,64 +1975,6 @@ exports.getOrdersByStatus = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Track order (real-time location and status)
- * GET /api/v1/orders/:id/track
- * Customer (own orders), Admin, Delivery (assigned orders)
- */
-exports.trackOrder = catchAsync(async (req, res, next) => {
-  const order = await Order.findById(req.params.id);
-
-  if (!order) {
-    return next(new AppError('Order not found', 404));
-  }
-
-  // Check authorization
-  const isCustomer = order.customer.id.toString() === req.user._id.toString();
-  const isDeliveryPartner =
-    order.deliveryPartner &&
-    order.deliveryPartner.id &&
-    order.deliveryPartner.id.toString() === req.user._id.toString();
-  const isAdmin = req.user.role === 'admin';
-
-  if (!isCustomer && !isDeliveryPartner && !isAdmin) {
-    return next(
-      new AppError('You do not have permission to track this order', 403)
-    );
-  }
-
-  // Get delivery partner current location if available
-  let deliveryPartnerLocation = null;
-  if (order.deliveryPartner && order.deliveryPartner.id) {
-    const dp = await User.findById(order.deliveryPartner.id).select(
-      'deliveryData.currentLocation'
-    );
-    if (dp && dp.deliveryData && dp.deliveryData.currentLocation) {
-      deliveryPartnerLocation = dp.deliveryData.currentLocation;
-    }
-  }
-
-  res.status(200).json({
-    status: 'success',
-    data: {
-      order: {
-        orderNumber: order.orderNumber,
-        status: order.status,
-        statusHistory: order.statusHistory,
-        estimatedDeliveryTime: order.estimatedDeliveryTime,
-        deliveryAddress: order.deliveryAddress,
-        deliveryPartner: order.deliveryPartner,
-        deliveryPartnerLocation,
-      },
-    },
-  });
-});
-
-/**
- * Rate order
- * PATCH /api/v1/orders/:id/rate
- * Customer only (own orders)
- */
 exports.rateOrder = catchAsync(async (req, res, next) => {
   const { foodRating, deliveryRating, packagingRating, comment } = req.body;
 
@@ -937,11 +2043,50 @@ exports.rateOrder = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Get order statistics
- * GET /api/v1/orders/stats/overview
- * Admin only
- */
+exports.customerCancelOrder = catchAsync(async (req, res, next) => {
+  const order = await Order.findById(req.params.id);
+
+  if (!order) {
+    return next(new AppError('Order not found', 404));
+  }
+
+  // Verify order belongs to customer
+  if (order.customer.id.toString() !== req.user._id.toString()) {
+    return next(new AppError('You can only cancel your own orders', 403));
+  }
+
+  // Can only cancel if PENDING
+  if (order.status !== 'PENDING') {
+    return next(new AppError('Order can only be cancelled when in PENDING status', 400));
+  }
+
+  order.status = 'CANCELLED';
+  order.statusHistory.push({
+    status: 'CANCELLED',
+    timestamp: new Date(),
+    updatedBy: req.user._id,
+    notes: 'Cancelled by customer',
+  });
+
+  await order.save();
+
+  logger.info(`Order ${order.orderNumber} cancelled by customer ${req.user.email.address}`);
+
+  // Notify admin
+  emitOrderUpdate({
+    type: 'order_cancelled',
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    cancelledBy: 'customer',
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Order cancelled successfully',
+    data: { order },
+  });
+});
+
 exports.getOrderStats = catchAsync(async (req, res, next) => {
   const stats = await Order.aggregate([
     {
@@ -987,196 +2132,6 @@ exports.getOrderStats = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Mark order as ready
- * PATCH /api/v1/admin/orders/:id/ready
- * Admin only
- */
-exports.markOrderReady = catchAsync(async (req, res, next) => {
-  const order = await Order.findById(req.params.id);
-
-  if (!order) {
-    return next(new AppError('Order not found', 404));
-  }
-
-  if (order.status !== 'PENDING') {
-    return next(new AppError(`Cannot mark order as ready. Current status: ${order.status}`, 400));
-  }
-
-  // Update status
-  order.status = 'READY';
-  order.statusHistory.push({
-    status: 'READY',
-    timestamp: new Date(),
-    updatedBy: req.user._id,
-    notes: 'Order marked as ready by admin',
-  });
-
-  await order.save();
-
-  logger.info(`Order ${order.orderNumber} marked as READY by admin ${req.user.email.address}`);
-
-  // Emit real-time update to customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'order_ready',
-    title: 'Order Ready',
-    message: `Your order ${order.orderNumber} is ready for pickup`,
-    orderId: order._id,
-  });
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Order marked as ready',
-    data: { order },
-  });
-});
-
-/**
- * Assign delivery partner to order
- * PATCH /api/v1/admin/orders/:id/assign
- * Admin only
- */
-exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
-  const { partnerId, deliveryPartnerId } = req.body;
-  
-  // Accept both parameter names for compatibility
-  const partnerIdToUse = deliveryPartnerId || partnerId;
-
-  if (!partnerIdToUse) {
-    return next(new AppError('Delivery partner ID is required', 400));
-  }
-
-  const order = await Order.findById(req.params.id);
-  if (!order) {
-    return next(new AppError('Order not found', 404));
-  }
-
-  if (order.status !== 'READY') {
-    return next(new AppError(`Cannot assign partner. Order must be READY. Current status: ${order.status}`, 400));
-  }
-
-  // Get delivery partner details
-  const partner = await User.findById(partnerIdToUse);
-  if (!partner || partner.role !== 'delivery') {
-    return next(new AppError('Invalid delivery partner', 400));
-  }
-
-  // Assign partner and mark as OUT_FOR_DELIVERY (same as when agent claims)
-  order.deliveryPartner = {
-    id: partner._id,
-    name: `${partner.name.first} ${partner.name.last}`,
-    phone: partner.phone.number,
-    vehicleNumber: partner.deliveryProfile?.vehicleNumber || 'N/A',
-    assignedAt: new Date(),
-    pickedUpAt: new Date(), // Set pickedUpAt same as when agent claims
-  };
-
-  // Change status to OUT_FOR_DELIVERY (same as claim behavior)
-  order.status = 'OUT_FOR_DELIVERY';
-  
-  order.statusHistory.push({
-    status: 'OUT_FOR_DELIVERY',
-    timestamp: new Date(),
-    updatedBy: req.user._id,
-    notes: `Delivery partner assigned by admin: ${partner.name.first} ${partner.name.last} - Order out for delivery`,
-  });
-
-  await order.save();
-
-  logger.info(`Order ${order.orderNumber} assigned to partner ${partner.email.address} and marked as OUT_FOR_DELIVERY`);
-
-  // Emit notification to delivery partner
-  emitUserNotification(partnerIdToUse.toString(), {
-    type: 'order_assigned',
-    title: 'New Delivery Order',
-    message: `Order ${order.orderNumber} has been assigned to you`,
-    orderId: order._id,
-    orderNumber: order.orderNumber,
-  });
-
-  // Emit notification to customer (order is now out for delivery)
-  const customerId = order.customer?.id || order.customer?._id || order.customerId;
-  if (customerId) {
-    emitUserNotification(customerId.toString(), {
-      type: 'order_out_for_delivery',
-      title: 'Order On The Way',
-      message: `${partner.name.first} is on the way with your order`,
-      orderId: order._id,
-      partner: {
-        name: `${partner.name.first} ${partner.name.last}`,
-        phone: partner.phone.number,
-      },
-    });
-  }
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Delivery partner assigned successfully',
-    data: { order },
-  });
-});
-
-/**
- * Cancel order (Admin)
- * PATCH /api/v1/admin/orders/:id/cancel
- * Admin only
- */
-exports.cancelOrder = catchAsync(async (req, res, next) => {
-  const { reason } = req.body;
-
-  const order = await Order.findById(req.params.id);
-  if (!order) {
-    return next(new AppError('Order not found', 404));
-  }
-
-  if (['DELIVERED', 'CANCELLED'].includes(order.status)) {
-    return next(new AppError(`Cannot cancel order with status: ${order.status}`, 400));
-  }
-
-  const previousStatus = order.status;
-  order.status = 'CANCELLED';
-  order.statusHistory.push({
-    status: 'CANCELLED',
-    timestamp: new Date(),
-    updatedBy: req.user._id,
-    notes: reason || 'Cancelled by admin',
-  });
-
-  await order.save();
-
-  logger.info(`Order ${order.orderNumber} cancelled by admin. Previous status: ${previousStatus}`);
-
-  // Notify customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'order_cancelled',
-    title: 'Order Cancelled',
-    message: `Your order ${order.orderNumber} has been cancelled`,
-    orderId: order._id,
-    reason: reason || 'Cancelled by restaurant',
-  });
-
-  // If partner was assigned, notify them
-  if (order.deliveryPartner?.id) {
-    emitUserNotification(order.deliveryPartner.id.toString(), {
-      type: 'order_cancelled',
-      title: 'Order Cancelled',
-      message: `Order ${order.orderNumber} has been cancelled`,
-      orderId: order._id,
-    });
-  }
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Order cancelled successfully',
-    data: { order },
-  });
-});
-
-/**
- * Mark order picked up (Delivery Partner)
- * PATCH /api/v1/delivery/orders/:id/pickup
- * Delivery partner only
- */
 exports.markOrderPickedUp = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
 
@@ -1226,11 +2181,6 @@ exports.markOrderPickedUp = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Mark order delivered (Delivery Partner)
- * PATCH /api/v1/delivery/orders/:id/deliver
- * Delivery partner only
- */
 exports.markOrderDelivered = catchAsync(async (req, res, next) => {
   const { collectedAmount, changeFund } = req.body;
 
@@ -1292,11 +2242,6 @@ exports.markOrderDelivered = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Get assigned orders for delivery partner
- * GET /api/v1/delivery/orders/assigned
- * Delivery partner only
- */
 exports.getAssignedOrders = catchAsync(async (req, res, next) => {
   const orders = await Order.find({
     'deliveryPartner.id': req.user._id,
@@ -1312,51 +2257,4 @@ exports.getAssignedOrders = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Customer cancel order
- * PATCH /api/v1/orders/:id/cancel
- * Customer only
- */
-exports.customerCancelOrder = catchAsync(async (req, res, next) => {
-  const order = await Order.findById(req.params.id);
-
-  if (!order) {
-    return next(new AppError('Order not found', 404));
-  }
-
-  // Verify order belongs to customer
-  if (order.customer.id.toString() !== req.user._id.toString()) {
-    return next(new AppError('You can only cancel your own orders', 403));
-  }
-
-  // Can only cancel if PENDING
-  if (order.status !== 'PENDING') {
-    return next(new AppError('Order can only be cancelled when in PENDING status', 400));
-  }
-
-  order.status = 'CANCELLED';
-  order.statusHistory.push({
-    status: 'CANCELLED',
-    timestamp: new Date(),
-    updatedBy: req.user._id,
-    notes: 'Cancelled by customer',
-  });
-
-  await order.save();
-
-  logger.info(`Order ${order.orderNumber} cancelled by customer ${req.user.email.address}`);
-
-  // Notify admin
-  emitOrderUpdate({
-    type: 'order_cancelled',
-    orderId: order._id,
-    orderNumber: order.orderNumber,
-    cancelledBy: 'customer',
-  });
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Order cancelled successfully',
-    data: { order },
-  });
-});
+module.exports = exports;

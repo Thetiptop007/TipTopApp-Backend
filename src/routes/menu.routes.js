@@ -1,3 +1,10 @@
+/**
+ * =====================================================
+ * MENU ROUTES
+ * Domain-based routes for all menu-related operations
+ * =====================================================
+ */
+
 const express = require('express');
 const menuController = require('../controllers/menu.controller');
 const authMiddleware = require('../middlewares/auth');
@@ -6,9 +13,9 @@ const { cacheMiddleware } = require('../middlewares/cache');
 
 const router = express.Router();
 
-/**
- * Public routes - No authentication required
- */
+/* =====================================================
+   PUBLIC / CUSTOMER MENU ROUTES
+===================================================== */
 
 // Get popular items (must be before /:id) - Cache for 10 minutes
 router.get('/popular/items', cacheMiddleware(600, 'menu'), menuController.getPopularItems);
@@ -36,41 +43,47 @@ router.get('/stats/overview', cacheMiddleware(300, 'menu'), menuController.getMe
 // Get menu item by ID - Cache for 10 minutes
 router.get('/:id', cacheMiddleware(600, 'menu'), menuController.getMenuItem);
 
-/**
- * Protected routes - Admin only
- * All routes below require authentication and admin role
- */
+/* =====================================================
+   ADMIN MENU ROUTES
+===================================================== */
+
+// All routes below require authentication and admin role
 router.use(authMiddleware.protect);
 router.use(authMiddleware.restrictTo('admin'));
 
+// Get all categories (admin)
+router.get('/admin/categories', menuController.getCategories);
+
+// Get all menu items (admin) with filtering and pagination
+router.get('/admin', menuController.getMenuItems);
+
 // Create new menu item
 router.post(
-  '/',
+  '/admin',
   menuValidator.validate(menuValidator.createMenuItemSchema),
   menuController.createMenuItem
 );
 
+// Get single menu item details (admin)
+router.get('/admin/:id', menuController.getMenuItem);
+
 // Update menu item
-router.patch(
-  '/:id',
+router.put(
+  '/admin/:id',
   menuValidator.validate(menuValidator.updateMenuItemSchema),
   menuController.updateMenuItem
 );
 
-// Update availability
-router.patch(
-  '/:id/availability',
-  menuValidator.validate(menuValidator.updateAvailabilitySchema),
-  menuController.updateAvailability
-);
+// Update menu item availability
+router.patch('/admin/:id/availability', menuController.updateAvailability);
 
 // Restore deleted menu item
-router.patch('/:id/restore', menuController.restoreMenuItem);
-
-// Soft delete menu item
-router.delete('/:id', menuController.deleteMenuItem);
+router.patch('/admin/:id/restore', menuController.restoreMenuItem);
 
 // Permanently delete menu item
-router.delete('/:id/permanent', menuController.permanentlyDeleteMenuItem);
+router.delete('/admin/:id/permanent', menuController.permanentlyDeleteMenuItem);
+
+// Delete menu item
+router.delete('/admin/:id', menuController.deleteMenuItem);
 
 module.exports = router;

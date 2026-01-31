@@ -809,30 +809,18 @@ exports.resendOTP = catchAsync(async (req, res, next) => {
   await user.save({ validateBeforeSave: false });
 
   logger.info(`[RESEND-OTP] SUCCESS - OTP regenerated for: ${user.email.address} (ID: ${user._id})`);
+  logger.info(`[RESEND-OTP] OTP for ${user.email.address}: ${otp} (Emails disabled - check logs)`);
 
   // Return response immediately
   res.status(200).json({
     status: 'success',
-    message: 'New OTP sent to your email!',
+    message: 'New OTP generated! (Check server logs for development)',
     data: {
-      otpSent: true,
+      otpSent: false,
       expiresIn: '10 minutes',
+      ...(process.env.NODE_ENV === 'development' && { otp }), // Only in development
     },
   });
-
-  // Send OTP email asynchronously
-  const emailService = require('../services/email.service');
-  emailService.sendOTPEmail(user.email.address, otp, user.name)
-    .then(emailSent => {
-      if (emailSent) {
-        logger.info(`[RESEND-OTP] OTP email sent successfully to: ${user.email.address}`);
-      } else {
-        logger.warn(`[RESEND-OTP] Failed to send OTP email to: ${user.email.address}`);
-      }
-    })
-    .catch(err => {
-      logger.error(`[RESEND-OTP] Error sending OTP email to: ${user.email.address}`, err);
-    });
 });
 
 /**

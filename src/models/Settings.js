@@ -61,6 +61,27 @@ const settingsSchema = new mongoose.Schema(
       // Amount in rupees (₹), not percentage - only applied in mobile app
     },
 
+    // Shop Status (Open/Closed)
+    shopStatus: {
+      isOpen: {
+        type: Boolean,
+        default: true,
+      },
+      lastUpdatedBy: {
+        type: String,
+        default: '',
+      },
+      lastUpdatedAt: {
+        type: Date,
+        default: Date.now,
+      },
+      closureReason: {
+        type: String,
+        default: '',
+        trim: true,
+      },
+    },
+
     // App Update Notification
     appUpdateAvailable: {
       type: Boolean,

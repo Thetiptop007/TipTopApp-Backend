@@ -10,6 +10,8 @@ const logger = require('../utils/logger');
  * Admin only
  */
 exports.getAllUsers = catchAsync(async (req, res, next) => {
+  console.log('🔵 [getAllUsers - USER CONTROLLER] Called with query:', req.query);
+  
   // Don't use limitFields for users - we need all user data except sensitive fields
   const features = new APIFeatures(User.find().select('-password -passwordResetToken -passwordResetExpires'), req.query)
     .filter()
@@ -18,6 +20,11 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
     .paginate();
 
   const result = await features.execute(User);
+
+  console.log('🔵 [getAllUsers - USER CONTROLLER] Result:', {
+    dataLength: result.data.length,
+    pagination: result.pagination
+  });
 
   res.status(200).json({
     status: 'success',

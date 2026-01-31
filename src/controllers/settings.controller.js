@@ -87,3 +87,54 @@ exports.updateSettings = catchAsync(async (req, res, next) => {
     },
   });
 });
+
+/**
+ * @desc    Toggle shop status (open/closed)
+ * @route   PATCH /api/v1/settings/shop-status
+ * @access  Admin only
+ */
+exports.toggleShopStatus = catchAsync(async (req, res, next) => {
+  const { isOpen, closureReason } = req.body;
+
+  // Validate input
+  if (typeof isOpen !== 'boolean') {
+    return next(new AppError('Please provide a valid shop status (true for open, false for closed)', 400));
+  }
+
+  // Get the singleton settings document
+  const settings = await Settings.getSettings();
+
+  // Update shop status
+  settings.shopStatus.isOpen = isOpen;
+  settings.shopStatus.lastUpdatedBy = req.user.email || req.user.name?.first || 'Admin';
+  settings.shopStatus.lastUpdatedAt = new Date();
+  settings.shopStatus.closureReason = !isOpen ? (closureReason || '') : '';
+
+  await settings.save();
+
+  logger.info(`🏪 Shop status changed to ${isOpen ? 'OPEN' : 'CLOSED'} by ${settings.shopStatus.lastUpdatedBy}${!isOpen && closureReason ? ` - Reason: ${closureReason}` : ''}`);
+
+  res.status(200).json({
+    success: true,
+    message: `Shop is now ${isOpen ? 'open' : 'closed'}`,
+    data: {
+      shopStatus: settings.shopStatus,
+    },
+  });
+});
+
+/**
+ * @desc    Get current shop status
+ * @route   GET /api/v1/settings/shop-status
+ * @access  Public
+ */
+exports.getShopStatus = catchAsync(async (req, res, next) => {
+  const settings = await Settings.getSettings();
+
+  res.status(200).json({
+    success: true,
+    data: {
+      shopStatus: settings.shopStatus,
+    },
+  });
+});

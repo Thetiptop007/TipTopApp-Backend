@@ -1,39 +1,46 @@
+/**
+ * =====================================================
+ * ORDER ROUTES
+ * Domain-based routes for all order-related operations
+ * =====================================================
+ */
+
 const express = require('express');
 const orderController = require('../controllers/order.controller');
-const adminOrderController = require('../controllers/admin-order.controller');
 const authMiddleware = require('../middlewares/auth');
 const orderValidator = require('../validators/order.validator');
+const { checkIdempotency } = require('../middlewares/idempotency.middleware');
+const { deduplicateRequest } = require('../middlewares/deduplication.middleware');
+const { checkShopOpen } = require('../middlewares/shopStatus.middleware');
 
 const router = express.Router();
 
-/**
- * Public routes - No authentication required
- */
+/* =====================================================
+   PUBLIC ORDER ROUTES (Guest Orders)
+===================================================== */
 
-// Guest order creation (no authentication)
-router.post(
-  '/guest/create',
-  adminOrderController.createGuestOrder
-);
+// Guest order creation (no authentication) - Check if shop is open
+router.post('/guest/create', checkShopOpen, orderController.createGuestOrder);
 
-/**
- * All order routes below require authentication
- */
+/* =====================================================
+   CUSTOMER ORDER ROUTES
+===================================================== */
+
+// All routes below require authentication
 router.use(authMiddleware.protect);
 
-/**
- * Customer routes
- */
-
-// Create new order
+// Create new order (customer) - Check if shop is open
 router.post(
   '/',
   authMiddleware.restrictTo('customer'),
+  checkShopOpen,
+  checkIdempotency(86400), // 24 hours
+  deduplicateRequest(5), // 5 second window
   orderValidator.validate(orderValidator.createOrderSchema),
   orderController.createOrder
 );
 
-// Get my orders
+// Get my orders (customer)
 router.get(
   '/my-orders',
   authMiddleware.restrictTo('customer'),
@@ -41,7 +48,7 @@ router.get(
   orderController.getMyOrders
 );
 
-// Rate order
+// Rate order (customer)
 router.patch(
   '/:id/rate',
   authMiddleware.restrictTo('customer'),
@@ -56,135 +63,80 @@ router.patch(
   orderController.customerCancelOrder
 );
 
-/**
- * Admin & Delivery Partner routes
- */
+/* =====================================================
+   ADMIN ORDER WORKFLOW ROUTES (Before Admin Middleware)
+   These routes need to be accessible by admin but are at root level for compatibility
+===================================================== */
 
-// Get pending orders (admin only)
-router.get(
-  '/pending/all',
-  authMiddleware.restrictTo('admin'),
-  orderController.getPendingOrders
-);
+// Admin accept order (PENDING → ACCEPTED)
+router.patch('/:id/accept', authMiddleware.restrictTo('admin'), deduplicateRequest(3), orderController.acceptOrder);
 
-// Get order statistics (admin only)
-router.get(
-  '/stats/overview',
-  authMiddleware.restrictTo('admin'),
-  orderController.getOrderStats
-);
+// Admin mark order as preparing (ACCEPTED → PREPARING)
+router.patch('/:id/preparing', authMiddleware.restrictTo('admin'), deduplicateRequest(3), orderController.markOrderPreparing);
 
-// Get orders by status
-router.get(
-  '/status/:status',
-  authMiddleware.restrictTo('admin', 'delivery'),
-  orderController.getOrdersByStatus
-);
+// Admin mark order as ready (ACCEPTED → READY or READY_FOR_PICKUP)
+router.patch('/:id/ready', authMiddleware.restrictTo('admin'), deduplicateRequest(3), orderController.markOrderReady);
 
-// Get all orders (admin sees all, delivery sees assigned)
-router.get(
-  '/',
-  authMiddleware.restrictTo('admin', 'delivery'),
-  orderValidator.validateQuery(orderValidator.orderQuerySchema),
-  orderController.getAllOrders
-);
+// Admin complete takeaway order (READY_FOR_PICKUP → DELIVERED)
+router.patch('/:id/complete-takeaway', authMiddleware.restrictTo('admin'), deduplicateRequest(3), orderController.completeTakeawayOrder);
 
-/**
- * Admin-specific order management routes
- */
+/* =====================================================
+   ADMIN ORDER ROUTES
+===================================================== */
 
-// Admin create order for walk-in customer
-router.post(
-  '/admin/create',
-  authMiddleware.restrictTo('admin'),
-  adminOrderController.createOrderForCustomer
-);
+// All admin routes require admin role
+router.use(authMiddleware.restrictTo('admin'));
 
-// Complete takeaway order
-router.patch(
-  '/:id/complete-takeaway',
-  authMiddleware.restrictTo('admin'),
-  adminOrderController.completeTakeawayOrder
-);
+// POS - Get minimal menu items for order creation (fast & light)
+router.get('/admin/pos-menu', orderController.getPOSMenuItems);
 
-// Admin accept order
-router.patch(
-  '/:id/accept',
-  authMiddleware.restrictTo('admin'),
-  adminOrderController.acceptOrder
-);
+// Create order from admin panel - Check if shop is open
+router.post('/admin', checkShopOpen, checkIdempotency(86400), deduplicateRequest(5), orderController.createAdminOrder);
 
-// Admin mark order as preparing
-router.patch(
-  '/:id/preparing',
-  authMiddleware.restrictTo('admin'),
-  adminOrderController.markOrderPreparing
-);
+// Get today's orders grouped by status
+router.get('/admin/today', orderController.getTodayOrders);
 
-// Admin mark order as ready
-router.patch(
-  '/:id/ready',
-  authMiddleware.restrictTo('admin'),
-  adminOrderController.markOrderReady
-);
+// Get all orders with pagination
+router.get('/admin/all', orderController.getAllOrders);
 
-// Admin cancel order
-router.patch(
-  '/:id/cancel',
-  authMiddleware.restrictTo('admin'),
-  adminOrderController.cancelOrder
-);
+// Get single order details
+router.get('/admin/:id/details', orderController.getOrderDetails);
 
-// Mark order as ready (admin only) - OLD ENDPOINT (keeping for backward compatibility)
-router.patch(
-  '/:id/mark-ready',
-  authMiddleware.restrictTo('admin'),
-  orderController.markOrderReady
-);
+// Update order status
+router.patch('/admin/:id/status', orderController.updateOrderStatus);
 
-// Assign delivery partner (admin only)
-router.patch(
-  '/:id/assign',
-  authMiddleware.restrictTo('admin'),
-  orderController.assignDeliveryPartner
-);
+// Assign delivery partner
+router.patch('/admin/:id/assign-delivery', orderController.assignDeliveryPartner);
 
-// Cancel order (admin only)
-router.patch(
-  '/:id/admin-cancel',
-  authMiddleware.restrictTo('admin'),
-  orderController.cancelOrder
-);
+// Admin cancel order (uses the same cancelOrder function from admin section)
+router.patch('/admin/:id/cancel', orderController.cancelOrder);
 
-/**
- * Delivery partner routes
- */
+// Create order for customer (admin)
+router.post('/admin/for-customer', orderController.createOrderForCustomer);
 
-// Get assigned orders
+/* =====================================================
+   DELIVERY PARTNER ORDER ROUTES
+===================================================== */
+
+// Get assigned orders (delivery partner)
 router.get(
   '/delivery/assigned',
   authMiddleware.restrictTo('delivery'),
   orderController.getAssignedOrders
 );
 
-// Mark order picked up
+// Mark order picked up (delivery partner)
 router.patch(
-  '/:id/pickup',
+  '/delivery/:id/pickup',
   authMiddleware.restrictTo('delivery'),
   orderController.markOrderPickedUp
 );
 
-// Mark order delivered
+// Mark order delivered (delivery partner)
 router.patch(
-  '/:id/deliver',
+  '/delivery/:id/deliver',
   authMiddleware.restrictTo('delivery'),
   orderController.markOrderDelivered
 );
-
-// Track order (customer for own orders, admin, assigned delivery partner)
-router.get('/:id/track', orderController.trackOrder);
-
-// Get order by ID (customer for own orders, admin, assigned delivery partner)
-router.get('/:id', orderController.getOrderById);
 
 module.exports = router;

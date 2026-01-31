@@ -47,3 +47,6 @@ dump.rdb
 *.pid
 *.seed
 *.pid.lock
+
+
+backup
