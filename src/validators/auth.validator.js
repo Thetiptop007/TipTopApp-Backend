@@ -19,8 +19,7 @@ exports.registerSchema = Joi.object({
           'string.min': 'First name must be at least 2 characters',
           'string.max': 'First name cannot exceed 50 characters',
         }),
-        last: Joi.string().trim().min(2).max(50).required().messages({
-          'string.empty': 'Last name is required',
+        last: Joi.string().trim().min(2).max(50).allow('').optional().messages({
           'string.min': 'Last name must be at least 2 characters',
           'string.max': 'Last name cannot exceed 50 characters',
         }),
@@ -43,12 +42,12 @@ exports.registerSchema = Joi.object({
     }),
 
   phone: Joi.string()
-    .pattern(/^(\+91)?[6-9]\d{9}$/)
+    .pattern(/^[6-9]\d{9}$/)
     .required()
     .messages({
       'string.empty': 'Phone number is required',
       'string.pattern.base':
-        'Please provide a valid 10-digit Indian phone number (with or without +91)',
+        'Please provide a valid 10-digit Indian phone number',
     }),
 
   role: Joi.string().valid('customer').default('customer').messages({
@@ -123,13 +122,13 @@ exports.loginSchema = Joi.object({
     .try(
       // Accept email format
       Joi.string().trim().lowercase().email(),
-      // Or accept phone number format
-      Joi.string().pattern(/^(\+91)?[6-9]\d{9}$/)
+      // Or accept phone number format (10 digits only)
+      Joi.string().pattern(/^[6-9]\d{9}$/)
     )
     .required()
     .messages({
       'string.empty': 'Email or phone number is required',
-      'alternatives.match': 'Please provide a valid email address or phone number',
+      'alternatives.match': 'Please provide a valid email address or 10-digit phone number',
     }),
 
   password: Joi.string().required().messages({
@@ -219,11 +218,23 @@ exports.updateProfileSchema = Joi.object({
       'string.min': 'First name must be at least 2 characters',
       'string.max': 'First name cannot exceed 50 characters',
     }),
-    last: Joi.string().trim().min(2).max(50).messages({
+    last: Joi.string().trim().min(2).max(50).allow('').optional().messages({
       'string.min': 'Last name must be at least 2 characters',
       'string.max': 'Last name cannot exceed 50 characters',
     }),
   }),
+
+  email: Joi.string().email().trim().lowercase().messages({
+    'string.email': 'Please provide a valid email address',
+  }),
+
+  phone: Joi.string()
+    .pattern(/^[6-9]\d{9}$/)
+    .trim()
+    .messages({
+      'string.empty': 'Phone number is required',
+      'string.pattern.base': 'Please provide a valid 10-digit Indian phone number',
+    }),
 
   addresses: Joi.array()
     .items(

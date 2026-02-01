@@ -81,6 +81,31 @@ router.patch('/:id/ready', authMiddleware.restrictTo('admin'), deduplicateReques
 router.patch('/:id/complete-takeaway', authMiddleware.restrictTo('admin'), deduplicateRequest(3), orderController.completeTakeawayOrder);
 
 /* =====================================================
+   DELIVERY PARTNER ORDER ROUTES
+===================================================== */
+
+// Get assigned orders (delivery partner)
+router.get(
+  '/delivery/assigned',
+  authMiddleware.restrictTo('delivery'),
+  orderController.getAssignedOrders
+);
+
+// Mark order picked up (delivery partner)
+router.patch(
+  '/delivery/:id/pickup',
+  authMiddleware.restrictTo('delivery'),
+  orderController.markOrderPickedUp
+);
+
+// Mark order delivered (delivery partner)
+router.patch(
+  '/delivery/:id/deliver',
+  authMiddleware.restrictTo('delivery'),
+  orderController.markOrderDelivered
+);
+
+/* =====================================================
    ADMIN ORDER ROUTES
 ===================================================== */
 
@@ -113,30 +138,5 @@ router.patch('/admin/:id/cancel', orderController.cancelOrder);
 
 // Create order for customer (admin)
 router.post('/admin/for-customer', orderController.createOrderForCustomer);
-
-/* =====================================================
-   DELIVERY PARTNER ORDER ROUTES
-===================================================== */
-
-// Get assigned orders (delivery partner)
-router.get(
-  '/delivery/assigned',
-  authMiddleware.restrictTo('delivery'),
-  orderController.getAssignedOrders
-);
-
-// Mark order picked up (delivery partner)
-router.patch(
-  '/delivery/:id/pickup',
-  authMiddleware.restrictTo('delivery'),
-  orderController.markOrderPickedUp
-);
-
-// Mark order delivered (delivery partner)
-router.patch(
-  '/delivery/:id/deliver',
-  authMiddleware.restrictTo('delivery'),
-  orderController.markOrderDelivered
-);
 
 module.exports = router;

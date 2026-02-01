@@ -176,8 +176,6 @@ exports.createMenuItem = catchAsync(async (req, res, next) => {
     priceVariants,
     category, // Changed from categories to category (single value)
     preparationTime,
-    isVegetarian,
-    isSpicy,
     isAvailable
   } = req.body;
 
@@ -205,8 +203,6 @@ exports.createMenuItem = catchAsync(async (req, res, next) => {
     priceVariants,
     categories: [category], // Store as array with single element
     preparationTime: preparationTime || 15,
-    isVegetarian: isVegetarian || false,
-    isSpicy: isSpicy || false,
     isAvailable: isAvailable !== undefined ? isAvailable : true,
     isActive: true,
     rating: 4.0,
@@ -244,8 +240,6 @@ exports.updateMenuItem = catchAsync(async (req, res, next) => {
     priceVariants,
     category, // Changed from categories to category (single value)
     preparationTime,
-    isVegetarian,
-    isSpicy,
     isAvailable,
     isActive
   } = req.body;
@@ -283,8 +277,6 @@ exports.updateMenuItem = catchAsync(async (req, res, next) => {
   if (priceVariants !== undefined) menuItem.priceVariants = priceVariants;
   if (category !== undefined) menuItem.categories = [category]; // Store as single-element array
   if (preparationTime !== undefined) menuItem.preparationTime = preparationTime;
-  if (isVegetarian !== undefined) menuItem.isVegetarian = isVegetarian;
-  if (isSpicy !== undefined) menuItem.isSpicy = isSpicy;
   if (isAvailable !== undefined) menuItem.isAvailable = isAvailable;
   if (isActive !== undefined) menuItem.isActive = isActive;
 
@@ -353,9 +345,7 @@ exports.getPublicMenu = catchAsync(async (req, res, next) => {
       priceVariants: itemObj.priceVariants || [],
       rating: itemObj.rating || 0,
       reviews: itemObj.reviews || 0,
-      preparationTime: itemObj.preparationTime || 15,
-      isVegetarian: itemObj.isVegetarian || false,
-      isSpicy: itemObj.isSpicy || false
+      preparationTime: itemObj.preparationTime || 15
     };
   });
 

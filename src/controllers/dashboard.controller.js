@@ -10,8 +10,8 @@ const catchAsync = require('../utils/catchAsync');
 exports.getDashboardStats = catchAsync(async (req, res, next) => {
   // Use parallel execution with Promise.all for better performance
   const [totalCustomers, totalOrders, recentOrders, monthlySales, highestMonthlySale, currentMonthSales] = await Promise.all([
-    // Count documents directly in MongoDB instead of fetching all
-    User.countDocuments({ role: 'customer' }),
+    // Count only active customers (exclude soft-deleted users)
+    User.countDocuments({ role: 'customer', isActive: { $ne: false } }),
     Order.countDocuments(),
     
     // Fetch 5 most recent orders with only required fields

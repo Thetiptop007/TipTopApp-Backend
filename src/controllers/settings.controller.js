@@ -1,4 +1,5 @@
 const Settings = require('../models/Settings');
+const User = require('../models/User');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');

@@ -141,7 +141,7 @@ exports.register = catchAsync(async (req, res, next) => {
   if (typeof name === 'string') {
     const nameParts = name.trim().split(' ');
     firstName = nameParts[0];
-    lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : nameParts[0];
+    lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
   } else {
     // name is already an object with first and last
     firstName = name.first;
@@ -184,16 +184,8 @@ exports.register = catchAsync(async (req, res, next) => {
   user.phone.isVerified = true;
   await user.save({ validateBeforeSave: false });
 
-  // Return response with verification already done
-  res.status(201).json({
-    status: 'success',
-    message: 'Account created successfully! You can now login.',
-    data: {
-      userId: user._id,
-      email: user.email.address,
-      verified: true,
-    },
-  });
+  // Authenticate user immediately after registration
+  await createSendToken(user, 201, res, 'Account created successfully! You are now logged in.');
 });
 
 /**
@@ -213,22 +205,14 @@ exports.login = catchAsync(async (req, res, next) => {
     return next(new AppError('Please provide email/phone and password.', 400));
   }
 
-  // 2) Normalize phone number - remove +91 prefix if present
+  // 2) Normalize phone number - use 10 digit format only
   let searchIdentifier = email;
-  let alternateIdentifier = email;
   
-  // If it looks like a phone number, create alternate search patterns
+  // If it looks like a phone number, use only 10 digits
   if (/^(\+91)?[6-9]\d{9}$/.test(email)) {
-    // Remove +91 if present
-    const phoneWithoutPrefix = email.replace(/^\+91/, '');
-    // Add +91 if not present
-    const phoneWithPrefix = email.startsWith('+91') ? email : `+91${email}`;
-    
-    searchIdentifier = phoneWithoutPrefix;
-    alternateIdentifier = phoneWithPrefix;
-    
-    logger.info(`[LOGIN] Phone number detected`);
-    logger.info(`[LOGIN] Searching with: ${searchIdentifier} OR ${alternateIdentifier}`);
+    // Remove +91 if present to get 10 digit number
+    searchIdentifier = email.replace(/^\+91/, '');
+    logger.info(`[LOGIN] Phone number detected: ${searchIdentifier}`);
   }
   
   logger.info(`[LOGIN] Searching for user with email OR phone: ${searchIdentifier}`);
@@ -237,7 +221,6 @@ exports.login = catchAsync(async (req, res, next) => {
     $or: [
       { 'email.address': email },
       { 'phone.number': searchIdentifier },
-      { 'phone.number': alternateIdentifier },
     ],
   }).select('+password +isActive');
 
@@ -311,42 +294,6 @@ exports.getMe = catchAsync(async (req, res, next) => {
 /**
  * Update current user profile
  * PATCH /api/v1/auth/me
- */
-exports.updateMe = catchAsync(async (req, res, next) => {
-  // Don't allow password updates through this route
-  if (req.body.password) {
-    return next(
-      new AppError('This route is not for password updates. Please use /change-password', 400)
-    );
-  }
-
-  // Allowed fields to update
-  const allowedFields = ['name', 'avatar', 'dateOfBirth'];
-  const updates = {};
-
-  Object.keys(req.body).forEach((key) => {
-    if (allowedFields.includes(key)) {
-      updates[key] = req.body[key];
-    }
-  });
-
-  const user = await User.findByIdAndUpdate(req.user._id, updates, {
-    new: true,
-    runValidators: true,
-  });
-
-  logger.info(`Profile updated for: ${user.email.address}`);
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Profile updated successfully.',
-    user,
-  });
-});
-
-/**
- * Logout current user
- * POST /api/v1/auth/logout
  */
 exports.logout = catchAsync(async (req, res, next) => {
   // TODO: Implement token blacklisting if needed
@@ -687,6 +634,8 @@ exports.getMe = catchAsync(async (req, res, next) => {
  * PATCH /api/v1/auth/me
  */
 exports.updateMe = catchAsync(async (req, res, next) => {
+  logger.info(`📥 [updateMe-ACTUAL] Received body: ${JSON.stringify(req.body)}`);
+  
   // Don't allow password update through this route
   if (req.body.password || req.body.passwordConfirm) {
     return next(
@@ -698,13 +647,22 @@ exports.updateMe = catchAsync(async (req, res, next) => {
   }
 
   // Filter allowed fields
-  const allowedFields = ['name', 'preferences', 'addresses'];
+  const allowedFields = ['name', 'preferences', 'addresses', 'email', 'phone'];
   const filteredBody = {};
   Object.keys(req.body).forEach(key => {
     if (allowedFields.includes(key)) {
-      filteredBody[key] = req.body[key];
+      // Transform email and phone to nested structure
+      if (key === 'email') {
+        filteredBody['email.address'] = req.body[key];
+      } else if (key === 'phone') {
+        filteredBody['phone.number'] = req.body[key];
+      } else {
+        filteredBody[key] = req.body[key];
+      }
     }
   });
+
+  logger.info(`📝 [updateMe-ACTUAL] Filtered updates: ${JSON.stringify(filteredBody)}`);
 
   // Update user
   const user = await User.findByIdAndUpdate(req.user._id, filteredBody, {
@@ -712,6 +670,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     runValidators: true,
   });
 
+  logger.info(`✅ [updateMe-ACTUAL] Updated - email: ${user.email.address}, phone: ${user.phone.number}`);
   logger.info(`Profile updated for: ${user.email.address}`);
 
   res.status(200).json({

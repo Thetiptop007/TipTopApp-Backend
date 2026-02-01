@@ -820,6 +820,16 @@ exports.claimOrder = catchAsync(async (req, res, next) => {
 
   logger.info(`✅ Order ${order.orderNumber} successfully claimed!`);
   logger.info(`📋 Status: READY → OUT_FOR_DELIVERY`);
+  logger.info(`🔍 CLAIMED ORDER DETAILS:`);
+  logger.info(`   - Order ID: ${order._id}`);
+  logger.info(`   - Order Number: ${order.orderNumber}`);
+  logger.info(`   - Status: ${order.status}`);
+  logger.info(`   - Delivery Partner ID: ${order.deliveryPartner?.id}`);
+  logger.info(`   - Delivery Partner Name: ${order.deliveryPartner?.name}`);
+  logger.info(`   - Delivery Partner Phone: ${order.deliveryPartner?.phone}`);
+  logger.info(`   - Assigned At: ${order.deliveryPartner?.assignedAt}`);
+  logger.info(`   - Picked Up At: ${order.deliveryPartner?.pickedUpAt}`);
+  logger.info(`================================`);
 
   try {
     logger.info(`📤 Emitting socket notification to customer: ${order.customer.id}`);

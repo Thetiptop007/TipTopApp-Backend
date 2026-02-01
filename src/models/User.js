@@ -100,7 +100,7 @@ const userSchema = new mongoose.Schema(
       },
       last: {
         type: String,
-        required: [true, 'Last name is required'],
+        required: false,
         trim: true,
       },
     },

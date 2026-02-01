@@ -13,7 +13,8 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
   console.log('🔵 [getAllUsers - USER CONTROLLER] Called with query:', req.query);
   
   // Don't use limitFields for users - we need all user data except sensitive fields
-  const features = new APIFeatures(User.find().select('-password -passwordResetToken -passwordResetExpires'), req.query)
+  // Filter to only return active users
+  const features = new APIFeatures(User.find({ isActive: { $ne: false } }).select('-password -passwordResetToken -passwordResetExpires'), req.query)
     .filter()
     .search() // Add search functionality
     .sort()
