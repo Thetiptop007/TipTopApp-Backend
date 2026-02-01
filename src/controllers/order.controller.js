@@ -2315,4 +2315,146 @@ exports.getAssignedOrders = catchAsync(async (req, res, next) => {
   });
 });
 
+/* =====================================================
+   THERMAL PRINTER SERVICE ENDPOINTS
+===================================================== */
+
+/**
+ * Get pending orders that need to be printed
+ * Used by the thermal printer desktop application
+ */
+exports.getPendingPrintOrders = catchAsync(async (req, res, next) => {
+  logger.info('🖨️  Thermal printer service requesting pending orders');
+  
+  // Find accepted orders that haven't been printed yet
+  const orders = await Order.find({
+    status: 'ACCEPTED',
+    isPrinted: { $ne: true },
+  })
+    .sort({ createdAt: 1 }) // Oldest first
+    .limit(10) // Max 10 orders at once to prevent overwhelming
+    .populate('customer.id', 'name phone email')
+    .populate('items.menuItemId', 'name')
+    .select('-__v')
+    .lean();
+
+  logger.info(`📥 Found ${orders.length} order(s) pending print`);
+  
+  if (orders.length > 0) {
+    logger.info(`📋 Order numbers: ${orders.map(o => o.orderNumber).join(', ')}`);
+  }
+
+  res.status(200).json({
+    success: true,
+    data: {
+      orders: orders.map(order => ({
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        createdAt: order.createdAt,
+        orderType: order.orderType,
+        status: order.status,
+        customer: {
+          name: order.customer?.name || 'Guest',
+          phone: order.customer?.phone || '',
+          email: order.customer?.email || '',
+        },
+        items: order.items.map(item => ({
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price,
+          portion: item.portion,
+          variant: item.portion, // Backward compatibility
+          variantName: item.portion,
+          customizations: item.customizations || [],
+        })),
+        pricing: {
+          subtotal: order.pricing?.itemsTotal || 0,
+          tax: order.pricing?.gst || 0,
+          deliveryFee: order.pricing?.deliveryFee || 0,
+          finalAmount: order.pricing?.finalAmount || 0,
+        },
+        specialInstructions: order.specialInstructions || '',
+      })),
+    },
+  });
+});
+
+/**
+ * Mark an order as printed
+ * Called by thermal printer after successful print
+ */
+exports.markOrderAsPrinted = catchAsync(async (req, res, next) => {
+  const { orderId } = req.params;
+  const { printedAt } = req.body;
+
+  logger.info(`🖨️  Marking order ${orderId} as printed`);
+
+  // Update order
+  const order = await Order.findByIdAndUpdate(
+    orderId,
+    {
+      isPrinted: true,
+      printedAt: printedAt || new Date(),
+    },
+    { new: true, runValidators: false }
+  );
+
+  if (!order) {
+    logger.error(`❌ Order ${orderId} not found`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`✅ Order ${order.orderNumber} marked as printed`);
+
+  res.status(200).json({
+    success: true,
+    message: 'Order marked as printed',
+    data: {
+      order: {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        isPrinted: order.isPrinted,
+        printedAt: order.printedAt,
+      },
+    },
+  });
+});
+
+// Mark order for thermal printing (admin action)
+exports.markOrderForPrint = catchAsync(async (req, res, next) => {
+  const { orderId } = req.params;
+
+  logger.info(`📋 Admin marking order ${orderId} for thermal printing`);
+
+  const order = await Order.findByIdAndUpdate(
+    orderId,
+    {
+      isPrinted: false, // Mark as not printed so thermal printer picks it up
+      status: 'ACCEPTED', // Ensure status is ACCEPTED (uppercase to match query)
+      updatedAt: new Date(),
+    },
+    { new: true }
+  );
+
+  if (!order) {
+    logger.error(`❌ Order ${orderId} not found`);
+    return next(new AppError('Order not found', 404));
+  }
+
+  logger.info(`✅ Order ${order.orderNumber} marked for thermal printing`);
+
+  res.status(200).json({
+    success: true,
+    message: 'Order will be printed on thermal printer shortly',
+    data: {
+      order: {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        isPrinted: order.isPrinted,
+        status: order.status,
+      },
+    },
+  });
+});
+
 module.exports = exports;

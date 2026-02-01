@@ -309,6 +309,16 @@ const orderSchema = new mongoose.Schema(
         },
       ],
     },
+
+    // Kitchen Printer Integration
+    isPrinted: {
+      type: Boolean,
+      default: false,
+    },
+    printedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -327,6 +337,7 @@ orderSchema.index({ paymentStatus: 1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ 'deliveryAddress.coordinates': '2dsphere' });
 orderSchema.index({ 'metadata.isFirstOrder': 1 });
+orderSchema.index({ status: 1, isPrinted: 1 }); // For printer service queries
 
 // Virtual for total items
 orderSchema.virtual('totalItems').get(function () {

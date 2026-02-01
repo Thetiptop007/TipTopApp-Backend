@@ -23,6 +23,27 @@ const router = express.Router();
 router.post('/guest/create', checkShopOpen, orderController.createGuestOrder);
 
 /* =====================================================
+   THERMAL PRINTER SERVICE ROUTES (No Auth Required)
+===================================================== */
+
+// Middleware to check printer service header
+const checkPrinterService = (req, res, next) => {
+  if (req.headers['x-printer-service'] === 'true') {
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    message: 'Access denied. This endpoint is only accessible to the printer service.',
+  });
+};
+
+// Get pending orders for printing
+router.get('/pending-print', checkPrinterService, orderController.getPendingPrintOrders);
+
+// Mark order as printed
+router.post('/:orderId/printed', checkPrinterService, orderController.markOrderAsPrinted);
+
+/* =====================================================
    CUSTOMER ORDER ROUTES
 ===================================================== */
 
@@ -135,6 +156,9 @@ router.patch('/admin/:id/assign-delivery', orderController.assignDeliveryPartner
 
 // Admin cancel order (uses the same cancelOrder function from admin section)
 router.patch('/admin/:id/cancel', orderController.cancelOrder);
+
+// Mark order for thermal printing (admin)
+router.post('/admin/:orderId/mark-for-print', orderController.markOrderForPrint);
 
 // Create order for customer (admin)
 router.post('/admin/for-customer', orderController.createOrderForCustomer);
