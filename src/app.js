@@ -120,6 +120,7 @@ const addressRoutes = require('./routes/address.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
 const errorRoutes = require('./routes/error.routes');
 const developerRoutes = require('./routes/developer.routes');
+const aiRoutes = require('./routes/ai.routes');
 
 // Legacy compatibility routes for old admin panel paths
 const adminOrdersRoutes = require('./routes/admin-orders.routes');
@@ -137,6 +138,7 @@ app.use('/api/v1/addresses', addressRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/errors', errorRoutes);
 app.use('/api/v1/developer', developerRoutes);
+app.use('/api/v1/ai', aiRoutes);
 
 // Mount legacy compatibility routes (for old web admin panel)
 app.use('/api/v1/admin/orders', adminOrdersRoutes);
