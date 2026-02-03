@@ -244,7 +244,6 @@ exports.login = catchAsync(async (req, res, next) => {
     logger.warn(`[LOGIN] Tried to match:`);
     logger.warn(`  - email.address: ${email}`);
     logger.warn(`  - phone.number: ${searchIdentifier}`);
-    logger.warn(`  - phone.number: ${alternateIdentifier}`);
   }
 
   // 3) Check if user exists and password is correct
