@@ -1277,7 +1277,7 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
 
   // Generate order number
   const orderCount = await Order.countDocuments();
-  const orderNumber = `ORD${String(orderCount + 1).padStart(6, '0')}`;
+  const orderNumber = `ORD-${String(orderCount + 1).padStart(6, '0')}`;
   console.log(`📋 Order number generated: ${orderNumber}`);
 
   // Create order
@@ -1534,14 +1534,8 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   const finalAmount = subtotal + deliveryCharges + taxAmount - discountAmount;
 
   // Generate unique order number
-  const now = new Date();
-  const day = String(now.getDate()).padStart(2, '0');
-  const hour = String(now.getHours()).padStart(2, '0');
-  const minute = String(now.getMinutes()).padStart(2, '0');
-  const second = String(now.getSeconds()).padStart(2, '0');
   const orderCount = await Order.countDocuments();
-  const counter = String((orderCount + 1) % 1000).padStart(3, '0');
-  const orderNumber = `ORD${day}${hour}${minute}${second}${counter}`;
+  const orderNumber = `ORD-${String(orderCount + 1).padStart(6, '0')}`;
 
   // Determine payment status based on method
   const paymentStatus = paymentMethod === 'COD' ? 'PENDING' : 
