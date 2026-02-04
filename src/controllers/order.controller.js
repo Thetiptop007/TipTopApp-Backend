@@ -2133,9 +2133,11 @@ exports.markOrderPickedUp = catchAsync(async (req, res, next) => {
     return next(new AppError('Order not found', 404));
   }
 
-  // Verify this order is assigned to current delivery partner
-  if (!order.deliveryPartner?.id || order.deliveryPartner.id.toString() !== req.user._id.toString()) {
-    return next(new AppError('This order is not assigned to you', 403));
+  // Verify this order is assigned to current delivery partner (skip check for admin)
+  if (req.user.role !== 'admin') {
+    if (!order.deliveryPartner?.id || order.deliveryPartner.id.toString() !== req.user._id.toString()) {
+      return next(new AppError('This order is not assigned to you', 403));
+    }
   }
 
   if (order.status !== 'READY') {
@@ -2154,19 +2156,23 @@ exports.markOrderPickedUp = catchAsync(async (req, res, next) => {
 
   await order.save();
 
-  logger.info(`Order ${order.orderNumber} picked up by partner ${req.user.email.address}`);
+  const userEmail = typeof req.user.email === 'string' ? req.user.email : req.user.email?.address || 'Unknown';
+  logger.info(`Order ${order.orderNumber} picked up by partner ${userEmail}`);
 
   // Notify customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'order_picked_up',
-    title: 'Order On The Way',
-    message: `${order.deliveryPartner.name} is on the way with your order`,
-    orderId: order._id,
-    partner: {
-      name: order.deliveryPartner.name,
-      phone: order.deliveryPartner.phone,
-    },
-  });
+  const customerId = order.customer?.id || order.customer?._id || order.customer;
+  if (customerId) {
+    emitUserNotification(customerId.toString(), {
+      type: 'order_picked_up',
+      title: 'Order On The Way',
+      message: `${order.deliveryPartner.name} is on the way with your order`,
+      orderId: order._id,
+      partner: {
+        name: order.deliveryPartner.name,
+        phone: order.deliveryPartner.phone,
+      },
+    });
+  }
 
   res.status(200).json({
     status: 'success',
@@ -2184,9 +2190,11 @@ exports.markOrderDelivered = catchAsync(async (req, res, next) => {
     return next(new AppError('Order not found', 404));
   }
 
-  // Verify this order is assigned to current delivery partner
-  if (!order.deliveryPartner?.id || order.deliveryPartner.id.toString() !== req.user._id.toString()) {
-    return next(new AppError('This order is not assigned to you', 403));
+  // Verify this order is assigned to current delivery partner (skip check for admin)
+  if (req.user.role !== 'admin') {
+    if (!order.deliveryPartner?.id || order.deliveryPartner.id.toString() !== req.user._id.toString()) {
+      return next(new AppError('This order is not assigned to you', 403));
+    }
   }
 
   if (order.status !== 'OUT_FOR_DELIVERY') {
@@ -2219,15 +2227,19 @@ exports.markOrderDelivered = catchAsync(async (req, res, next) => {
 
   await order.save();
 
-  logger.info(`Order ${order.orderNumber} delivered by partner ${req.user.email.address}`);
+  const userEmail = typeof req.user.email === 'string' ? req.user.email : req.user.email?.address || 'Unknown';
+  logger.info(`Order ${order.orderNumber} delivered by partner ${userEmail}`);
 
   // Notify customer
-  emitUserNotification(order.customer.id.toString(), {
-    type: 'order_delivered',
-    title: 'Order Delivered',
-    message: `Your order ${order.orderNumber} has been delivered. Enjoy your meal!`,
-    orderId: order._id,
-  });
+  const customerId = order.customer?.id || order.customer?._id || order.customer;
+  if (customerId) {
+    emitUserNotification(customerId.toString(), {
+      type: 'order_delivered',
+      title: 'Order Delivered',
+      message: `Your order ${order.orderNumber} has been delivered. Enjoy your meal!`,
+      orderId: order._id,
+    });
+  }
 
   res.status(200).json({
     status: 'success',

@@ -17,21 +17,21 @@ router.use(authMiddleware.protect);
 // Get my statistics
 router.get(
   '/my-stats',
-  authMiddleware.restrictTo('delivery'),
+  authMiddleware.restrictTo('delivery', 'admin'),
   deliveryController.getMyStats
 );
 
 // Get available orders (ready for pickup)
 router.get(
   '/available-orders',
-  authMiddleware.restrictTo('delivery'),
+  authMiddleware.restrictTo('delivery', 'admin'),
   deliveryController.getAvailableOrders
 );
 
 // Claim/select an order to deliver
 router.post(
   '/claim-order/:orderId',
-  authMiddleware.restrictTo('delivery'),
+  authMiddleware.restrictTo('delivery', 'admin'),
   deliveryController.claimOrder
 );
 

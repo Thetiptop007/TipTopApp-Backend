@@ -112,17 +112,17 @@ router.get(
   orderController.getAssignedOrders
 );
 
-// Mark order picked up (delivery partner)
+// Mark order picked up (delivery partner or admin)
 router.patch(
   '/delivery/:id/pickup',
-  authMiddleware.restrictTo('delivery'),
+  authMiddleware.restrictTo('delivery', 'admin'),
   orderController.markOrderPickedUp
 );
 
-// Mark order delivered (delivery partner)
+// Mark order delivered (delivery partner or admin)
 router.patch(
   '/delivery/:id/deliver',
-  authMiddleware.restrictTo('delivery'),
+  authMiddleware.restrictTo('delivery', 'admin'),
   orderController.markOrderDelivered
 );
 
