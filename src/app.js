@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const helmet = require('helmet');
 const cors = require('cors');
 const mongoSanitize = require('express-mongo-sanitize');
@@ -96,6 +97,17 @@ if (process.env.NODE_ENV === 'development') {
 } else {
   app.use(morgan('combined', { stream: logger.stream }));
 }
+
+// Serve static files (for APK downloads)
+app.use('/downloads', express.static(path.join(__dirname, '../public/downloads'), {
+  maxAge: '1d', // Cache for 1 day
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.apk')) {
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="TipTop.apk"');
+    }
+  }
+}));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
