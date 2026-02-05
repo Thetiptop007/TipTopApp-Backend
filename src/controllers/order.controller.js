@@ -2249,75 +2249,39 @@ exports.markOrderDelivered = catchAsync(async (req, res, next) => {
 });
 
 exports.getAssignedOrders = catchAsync(async (req, res, next) => {
-  logger.info('================================');
-  logger.info('===== GET ASSIGNED ORDERS =====');
-  logger.info('================================');
-  logger.info(`🚚 Delivery Agent ID: ${req.user._id}`);
-  logger.info(`📧 Delivery Agent Email: ${req.user.email?.address || 'N/A'}`);
-  logger.info(`📱 Delivery Agent Phone: ${req.user.phone?.number || 'N/A'}`);
-  
-  // Get today's date boundaries for logging
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   
-  // Log the exact query being used
-  const query = {
-    'deliveryPartner.id': req.user._id,
-    status: { $in: ['READY', 'OUT_FOR_DELIVERY'] },
-  };
-  logger.info(`🔍 Query:`);
-  logger.info(`   - deliveryPartner.id: ${query['deliveryPartner.id']}`);
-  logger.info(`   - status: ${JSON.stringify(query.status)}`);
-  
   // Fetch ALL assigned orders regardless of creation date
   // This ensures orders assigned yesterday but not delivered yet remain visible
-  const orders = await Order.find(query)
+  const orders = await Order.find({
+    'deliveryPartner.id': req.user._id,
+    status: { $in: ['READY', 'OUT_FOR_DELIVERY'] },
+  })
     .sort('-createdAt')
     .select('-__v');
   
-  logger.info(`📊 Query Result: Found ${orders.length} order(s)`);
-
-  // Log each order in detail
-  if (orders.length > 0) {
-    logger.info(`\n📋 DETAILED ORDER INFORMATION:`);
-    orders.forEach((order, index) => {
-      logger.info(`\n   Order ${index + 1}:`);
-      logger.info(`   - Order Number: ${order.orderNumber}`);
-      logger.info(`   - Order ID: ${order._id}`);
-      logger.info(`   - Status: ${order.status}`);
-      logger.info(`   - Created At: ${order.createdAt}`);
-      logger.info(`   - Delivery Partner ID: ${order.deliveryPartner?.id}`);
-      logger.info(`   - Delivery Partner Name: ${order.deliveryPartner?.name}`);
-      logger.info(`   - Assigned At: ${order.deliveryPartner?.assignedAt}`);
-    });
-  } else {
-    logger.warn(`⚠️  NO ORDERS FOUND!`);
-    logger.info(`   This could mean:`);
-    logger.info(`   1. No orders are assigned to this delivery agent`);
-    logger.info(`   2. All assigned orders have been delivered`);
-    logger.info(`   3. The deliveryPartner.id might not match the agent's ID`);
-  }
+  // Also fetch today's DELIVERED orders for this delivery partner
+  const deliveredOrders = await Order.find({
+    'deliveryPartner.id': req.user._id,
+    status: 'DELIVERED',
+    'deliveryPartner.deliveredAt': { 
+      $gte: startOfDay,
+      $lte: now
+    }
+  })
+    .sort('-deliveryPartner.deliveredAt')
+    .select('-__v');
   
-  // Track orders from previous days
-  const ordersFromPreviousDays = orders.filter(order => {
-    const orderDate = new Date(order.createdAt);
-    orderDate.setHours(0, 0, 0, 0);
-    return orderDate < startOfDay;
-  });
+  // Combine active and delivered orders
+  const allOrders = [...orders, ...deliveredOrders];
 
-  if (ordersFromPreviousDays.length > 0) {
-    logger.info(`\n⚠️  Including ${ordersFromPreviousDays.length} active order(s) from previous day(s) to prevent midnight loss`);
-    logger.info(`📅 Previous day orders: ${ordersFromPreviousDays.map(o => o.orderNumber).join(', ')}`);
-  }
-
-  logger.info(`\n✅ Total assigned orders: ${orders.length}`);
-  logger.info(`📦 Order Numbers: ${orders.map(o => o.orderNumber).join(', ')}`);
-  logger.info('================================\n');
+  logger.info(`Delivery agent ${req.user._id} - Active: ${orders.length}, Delivered Today: ${deliveredOrders.length}`);
 
   res.status(200).json({
     status: 'success',
-    results: orders.length,
-    data: { orders },
+    results: allOrders.length,
+    data: { orders: allOrders },
   });
 });
 
