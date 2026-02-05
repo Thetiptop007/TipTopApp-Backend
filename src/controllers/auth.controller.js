@@ -254,22 +254,10 @@ exports.login = catchAsync(async (req, res, next) => {
     return next(new AppError('Incorrect email/phone or password.', 401));
   }
 
-  // 4) Check if user is active
-  if (!user.isActive) {
-    logger.warn(`[LOGIN] Failed - Account deactivated: ${email}`);
-    logger.info(`========================================\n`);
-    return next(
-      new AppError(
-        'Your account has been deactivated. Please contact support.',
-        401
-      )
-    );
-  }
-
   logger.info(`[LOGIN] SUCCESS - User logged in: ${user.email.address} (ID: ${user._id}, Role: ${user.role})`);
   logger.info(`========================================\n`);
 
-  // 5) Send token (verification check removed)
+  // Send token (verification check and isActive check removed)
   createSendToken(user, 200, res, 'Login successful!');
 });
 

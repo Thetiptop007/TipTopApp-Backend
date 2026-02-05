@@ -30,19 +30,20 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
   const normalizedPhone = phone.replace(/^\+91/, '');
   logger.info(`  - Normalized Phone: ${normalizedPhone}`);
 
-  // Check if user already exists
+  // Check if user already exists (only active users)
   const existingUser = await User.findOne({ 
     $or: [
       { 'email.address': email },
       { 'phone.number': normalizedPhone },
       { 'phone.number': phone }
-    ]
+    ],
+    isActive: true
   }).select('+password');
 
   let deliveryPartner;
 
   if (existingUser) {
-    logger.info(`[REGISTER] User found - Email: ${existingUser.email.address}, Phone: ${existingUser.phone.number}`);
+    logger.info(`[REGISTER] Active user found - Email: ${existingUser.email.address}, Phone: ${existingUser.phone.number}`);
     
     // Check if user already has delivery role
     if (existingUser.roles && existingUser.roles.includes('delivery')) {
