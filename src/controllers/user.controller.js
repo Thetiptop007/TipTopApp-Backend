@@ -204,7 +204,7 @@ exports.getUsersByRole = catchAsync(async (req, res, next) => {
   }
 
   // Don't use limitFields for users - we need all customer data
-  const features = new APIFeatures(User.find({ role }).select('-password -passwordResetToken -passwordResetExpires'), req.query)
+  const features = new APIFeatures(User.find({ roles: role }).select('-password -passwordResetToken -passwordResetExpires'), req.query)
     .search()
     .sort()
     .paginate();
@@ -244,7 +244,7 @@ exports.getUserStats = catchAsync(async (req, res, next) => {
 
   const customerStats = await User.aggregate([
     {
-      $match: { role: 'customer' },
+      $match: { roles: 'customer' },
     },
     {
       $group: {
@@ -260,7 +260,7 @@ exports.getUserStats = catchAsync(async (req, res, next) => {
 
   const deliveryStats = await User.aggregate([
     {
-      $match: { role: 'delivery' },
+      $match: { roles: 'delivery' },
     },
     {
       $group: {

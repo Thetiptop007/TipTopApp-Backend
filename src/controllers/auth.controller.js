@@ -163,6 +163,7 @@ exports.register = catchAsync(async (req, res, next) => {
       number: phone,
       isVerified: false,
     },
+    roles: [role],
     role,
   };
 

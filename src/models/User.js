@@ -85,6 +85,19 @@ const userSchema = new mongoose.Schema(
       minlength: [6, 'Password must be at least 6 characters'],
       select: false,
     },
+    roles: {
+      type: [String],
+      enum: ['customer', 'delivery', 'admin'],
+      default: ['customer'],
+      validate: {
+        validator: function(v) {
+          // Ensure no duplicate roles
+          return v.length === new Set(v).size;
+        },
+        message: 'Duplicate roles are not allowed'
+      }
+    },
+    // Keep 'role' for backward compatibility (returns primary role)
     role: {
       type: String,
       enum: ['customer', 'delivery', 'admin'],
@@ -294,7 +307,25 @@ userSchema.virtual('fullName').get(function () {
 
 // Virtual for default address
 userSchema.virtual('defaultAddress').get(function () {
+  if (!this.addresses || this.addresses.length === 0) {
+    return null;
+  }
   return this.addresses.find((addr) => addr.isDefault);
+});
+
+// Sync primary role with roles array
+userSchema.pre('save', function (next) {
+  if (this.roles && this.roles.length > 0) {
+    // Set primary role based on priority: admin > delivery > customer
+    if (this.roles.includes('admin')) {
+      this.role = 'admin';
+    } else if (this.roles.includes('delivery')) {
+      this.role = 'delivery';
+    } else {
+      this.role = 'customer';
+    }
+  }
+  next();
 });
 
 // Hash password before saving
@@ -367,9 +398,24 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 
 // Generate JWT token
 userSchema.methods.generateAuthToken = function () {
-  return jwt.sign({ id: this._id, role: this.role }, process.env.JWT_SECRET, {
+  return jwt.sign({ id: this._id, role: this.role, roles: this.roles }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE,
   });
+};
+
+// Check if user has a specific role
+userSchema.methods.hasRole = function (role) {
+  return this.roles && this.roles.includes(role);
+};
+
+// Add a role to user
+userSchema.methods.addRole = function (role) {
+  if (!this.roles) {
+    this.roles = [];
+  }
+  if (!this.roles.includes(role)) {
+    this.roles.push(role);
+  }
 };
 
 // Generate refresh token
@@ -426,7 +472,7 @@ userSchema.methods.getActiveDeviceTokens = function () {
 // Static method to find available delivery partners
 userSchema.statics.findAvailableDeliveryPartners = function (location, limit = 10) {
   return this.find({
-    role: 'delivery',
+    roles: 'delivery',
     isActive: true,
     'deliveryData.availability': true,
     'deliveryData.currentLocation.coordinates': {

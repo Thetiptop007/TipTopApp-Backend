@@ -1723,7 +1723,7 @@ exports.getAllOrders_OLD_DELIVERY = catchAsync(async (req, res, next) => {
   let query = Order.find();
 
   // If delivery partner, show only assigned orders
-  if (req.user.role === 'delivery') {
+  if (req.user.hasRole('delivery')) {
     query = Order.find({ 'deliveryPartner.id': req.user._id });
   }
 
@@ -1954,7 +1954,7 @@ exports.getOrdersByStatus = catchAsync(async (req, res, next) => {
   let query = { status };
 
   // If delivery partner, filter by assigned orders
-  if (req.user.role === 'delivery') {
+  if (req.user.hasRole('delivery')) {
     query['deliveryPartner.id'] = req.user._id;
   }
 

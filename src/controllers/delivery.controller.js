@@ -37,18 +37,51 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
       { 'phone.number': normalizedPhone },
       { 'phone.number': phone }
     ]
-  });
+  }).select('+password');
+
+  let deliveryPartner;
 
   if (existingUser) {
-    logger.warn(`[REGISTER] User already exists - Email: ${existingUser.email.address}, Phone: ${existingUser.phone.number}`);
-    return next(new AppError('User with this email or phone already exists', 400));
-  }
+    logger.info(`[REGISTER] User found - Email: ${existingUser.email.address}, Phone: ${existingUser.phone.number}`);
+    
+    // Check if user already has delivery role
+    if (existingUser.roles && existingUser.roles.includes('delivery')) {
+      logger.warn(`[REGISTER] User already has delivery role`);
+      return next(new AppError('User is already registered as a delivery partner', 400));
+    }
 
-  // Create delivery partner
-  const deliveryPartner = await User.create({
+    // Add delivery role to existing user
+    logger.info(`[REGISTER] Adding delivery role to existing user`);
+    existingUser.addRole('delivery');
+    
+    // Update delivery data
+    existingUser.deliveryData = {
+      vehicleInfo: {
+        type: vehicleType,
+      },
+      availability: true,
+      rating: 0,
+      totalDeliveries: 0,
+      totalEarnings: 0,
+    };
+
+    await existingUser.save();
+    deliveryPartner = existingUser;
+    
+    logger.info(`[REGISTER] SUCCESS - Delivery role added to existing user:`);
+  } else {
+    // Create new delivery partner
+    logger.info(`[REGISTER] Creating new delivery partner`);
+    
+    // Parse name properly - avoid duplication
+    const nameParts = name.trim().split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
+    
+    deliveryPartner = await User.create({
     name: {
-      first: name.split(' ')[0] || name,
-      last: name.split(' ').slice(1).join(' ') || name.split(' ')[0],
+      first: firstName,
+      last: lastName,
     },
     email: {
       address: email,
@@ -58,21 +91,23 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
       number: normalizedPhone,
       isVerified: true,
     },
-    password,
-    role: 'delivery',
-    isActive: true,
-    deliveryData: {
-      vehicleInfo: {
-        type: vehicleType,
+      password,
+      roles: ['delivery'],
+      role: 'delivery',
+      isActive: true,
+      deliveryData: {
+        vehicleInfo: {
+          type: vehicleType,
+        },
+        availability: true,
+        rating: 0,
+        totalDeliveries: 0,
+        totalEarnings: 0,
       },
-      availability: true,
-      rating: 0,
-      totalDeliveries: 0,
-      totalEarnings: 0,
-    },
-  });
+    });
 
-  logger.info(`[REGISTER] SUCCESS - Delivery partner created:`);
+    logger.info(`[REGISTER] SUCCESS - Delivery partner created:`);
+  }
   logger.info(`  - ID: ${deliveryPartner._id}`);
   logger.info(`  - Name: ${deliveryPartner.name.first} ${deliveryPartner.name.last}`);
   logger.info(`  - Email: ${deliveryPartner.email.address}`);
@@ -113,7 +148,7 @@ exports.deleteDeliveryPartner = catchAsync(async (req, res, next) => {
     return next(new AppError('Delivery partner not found', 404));
   }
 
-  if (deliveryPartner.role !== 'delivery') {
+  if (!deliveryPartner.hasRole('delivery')) {
     return next(new AppError('User is not a delivery partner', 400));
   }
 
@@ -154,15 +189,15 @@ exports.updateDeliveryPartner = catchAsync(async (req, res, next) => {
     return next(new AppError('Delivery partner not found', 404));
   }
 
-  if (deliveryPartner.role !== 'delivery') {
+  if (!deliveryPartner.hasRole('delivery')) {
     return next(new AppError('User is not a delivery partner', 400));
   }
 
   // Update fields if provided
   if (name) {
-    const nameParts = name.split(' ');
-    deliveryPartner.name.first = nameParts[0] || name;
-    deliveryPartner.name.last = nameParts.slice(1).join(' ') || nameParts[0];
+    const nameParts = name.trim().split(' ');
+    deliveryPartner.name.first = nameParts[0];
+    deliveryPartner.name.last = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
   }
 
   if (email) {
@@ -244,7 +279,7 @@ exports.getAvailableDeliveryPartners = catchAsync(async (req, res, next) => {
   } else {
     // Get all available partners
     deliveryPartners = await User.find({
-      role: 'delivery',
+      roles: 'delivery',
       isActive: true,
       'deliveryData.availability': true,
     }).select(
@@ -513,7 +548,7 @@ exports.getDeliverySessions = catchAsync(async (req, res, next) => {
   let query = {};
 
   // If delivery partner, show only their sessions
-  if (req.user.role === 'delivery') {
+  if (req.user.hasRole('delivery') && !req.user.hasRole('admin')) {
     query['deliveryPartner.id'] = req.user._id;
   }
 
@@ -572,7 +607,7 @@ exports.getUnsettledSessions = catchAsync(async (req, res, next) => {
 exports.getAllDeliveryPartners = catchAsync(async (req, res, next) => {
   const { search, status, page = 1, limit = 10 } = req.query;
 
-  const query = { role: 'delivery' };
+  const query = { roles: 'delivery' };
 
   // Search filter
   if (search) {
@@ -633,7 +668,7 @@ exports.getAllDeliveryPartners = catchAsync(async (req, res, next) => {
         completedToday: todayOrders,
         totalDeliveries: partner.deliveryData.totalDeliveries || 0,
         rating: partner.deliveryData.rating || 0,
-        vehicleType: partner.deliveryData.vehicleType || 'N/A',
+        vehicleType: partner.deliveryData?.vehicleInfo?.type || 'N/A',
         location: partner.deliveryData.currentZone || 'N/A',
       };
     })
@@ -659,9 +694,9 @@ exports.getAllDeliveryPartners = catchAsync(async (req, res, next) => {
  * Admin only
  */
 exports.getDeliveryStats = catchAsync(async (req, res, next) => {
-  const totalPartners = await User.countDocuments({ role: 'delivery' });
+  const totalPartners = await User.countDocuments({ roles: 'delivery' });
   const availablePartners = await User.countDocuments({
-    role: 'delivery',
+    roles: 'delivery',
     'deliveryData.availability': true,
     isActive: true,
   });
@@ -677,7 +712,7 @@ exports.getDeliveryStats = catchAsync(async (req, res, next) => {
 
   const performanceStats = await User.aggregate([
     {
-      $match: { role: 'delivery' },
+      $match: { roles: 'delivery' },
     },
     {
       $group: {

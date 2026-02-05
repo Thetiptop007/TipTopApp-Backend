@@ -83,6 +83,7 @@ exports.protect = catchAsync(async (req, res, next) => {
 /**
  * Restrict to middleware - Restricts access based on user roles
  * Usage: restrictTo('admin', 'manager')
+ * Checks if user has ANY of the required roles
  */
 exports.restrictTo = (...roles) => {
   return (req, res, next) => {
@@ -93,9 +94,13 @@ exports.restrictTo = (...roles) => {
       );
     }
 
-    if (!roles.includes(req.user.role)) {
+    // Check if user has any of the required roles
+    const userRoles = req.user.roles || [req.user.role];
+    const hasRequiredRole = roles.some(role => userRoles.includes(role));
+
+    if (!hasRequiredRole) {
       logger.warn(
-        `Access denied for user ${req.user.email} (${req.user.role}) - Required roles: ${roles.join(', ')}`
+        `Access denied for user ${req.user.email} (roles: ${userRoles.join(', ')}) - Required roles: ${roles.join(', ')}`
       );
       return next(
         new AppError('You do not have permission to perform this action.', 403)
@@ -103,7 +108,7 @@ exports.restrictTo = (...roles) => {
     }
 
     logger.info(
-      `Access granted for user ${req.user.email} (${req.user.role})`
+      `Access granted for user ${req.user.email} (roles: ${userRoles.join(', ')})`
     );
     next();
   };
