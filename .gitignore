@@ -37,6 +37,10 @@ build/
 uploads/
 temp/
 
+# APK files
+public/downloads/*.apk
+*.apk
+
 # PM2
 .pm2/
 
