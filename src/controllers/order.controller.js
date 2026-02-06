@@ -1194,13 +1194,16 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
   let menuItems = [];
   if (regularItems.length > 0) {
     const menuItemIds = regularItems.map(item => item.menuItem);
-    menuItems = await MenuItem.find({ _id: { $in: menuItemIds } }).lean();
+    // Get unique menu item IDs for validation (same item with different portions)
+    const uniqueMenuItemIds = [...new Set(menuItemIds)];
+    menuItems = await MenuItem.find({ _id: { $in: uniqueMenuItemIds } }).lean();
 
-    if (menuItems.length !== menuItemIds.length) {
+    if (menuItems.length !== uniqueMenuItemIds.length) {
       console.log('❌ Some menu items not found');
+      console.log(`Expected ${uniqueMenuItemIds.length} unique items, found ${menuItems.length}`);
       return next(new AppError('Some menu items not found', 404));
     }
-    console.log(`✅ All ${menuItems.length} regular menu items found`);
+    console.log(`✅ All ${menuItems.length} unique menu items found (${regularItems.length} total items with portions)`);
   }
 
   // Calculate pricing
