@@ -1892,7 +1892,11 @@ exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
   }
 
   // Use model method to assign delivery partner
-  await order.assignDeliveryPartner(deliveryPartnerId);
+  await order.assignDeliveryPartner(deliveryPartnerId, {
+    name: `${deliveryPartner.name.first} ${deliveryPartner.name.last}`,
+    phone: deliveryPartner.phone.number,
+    vehicleNumber: deliveryPartner.deliveryData?.vehicleNumber || 'N/A'
+  });
 
   logger.info(
     `Order ${order.orderNumber} assigned to ${deliveryPartner.name.first} ${deliveryPartner.name.last} by ${req.user.email.address}`

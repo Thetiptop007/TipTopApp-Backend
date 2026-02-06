@@ -414,8 +414,10 @@ orderSchema.methods.assignDeliveryPartner = async function (partnerId, partnerDe
     phone: partnerDetails.phone,
     vehicleNumber: partnerDetails.vehicleNumber,
     assignedAt: new Date(),
+    pickedUpAt: new Date(), // Admin assignment = immediate pickup
   };
-  await this.updateStatus('CONFIRMED');
+  // Change status to OUT_FOR_DELIVERY (same as agent claiming)
+  await this.updateStatus('OUT_FOR_DELIVERY');
 };
 
 module.exports = mongoose.model('Order', orderSchema);
