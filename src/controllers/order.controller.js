@@ -807,18 +807,20 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       'rejected': 'Canceled'
     };
 
+    const transformedItems = order.items?.map(item => ({
+      name: item.name,
+      portion: item.portion || '',
+      quantity: item.quantity,
+      price: item.subtotal
+    })) || [];
+
     return {
       id: order._id.toString(),
       orderId: order.orderNumber,
       customer: `${order.customer?.name || 'N/A'}`,
       phone: order.customer?.phone || 'N/A',
       orderType: order.orderType || 'DELIVERY', // Include orderType - critical for UI logic
-      items: order.items?.map(item => ({
-        name: item.name,
-        portion: item.portion || '',
-        quantity: item.quantity,
-        price: item.subtotal
-      })) || [],
+      items: transformedItems,
       itemCount: order.items?.length || 0,
       total: order.pricing?.finalAmount || 0,
       pricing: {
@@ -922,15 +924,12 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
 });
 
 exports.getAllOrders = catchAsync(async (req, res, next) => {
-  console.log('🔵 [getAllOrders - NEW CONTROLLER] Called with page:', req.query.page, 'limit:', req.query.limit);
-  
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
 
   // Get total count
   const totalOrders = await Order.countDocuments();
-  console.log('🔵 [getAllOrders - NEW CONTROLLER] Total orders in DB:', totalOrders);
 
   // Fetch orders (summary only but include items for count)
   const orders = await Order.find()
@@ -975,10 +974,6 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
     date: order.createdAt.toISOString().split('T')[0],
     time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
   }));
-
-  console.log('🔵 [getAllOrders - NEW CONTROLLER] Transformed orders count:', transformedOrders.length);
-  console.log('🔵 [getAllOrders - NEW CONTROLLER] Sample order:', transformedOrders[0]);
-  console.log('🔵 [getAllOrders - NEW CONTROLLER] Pagination:', { currentPage: page, totalPages: Math.ceil(totalOrders / limit), totalOrders, limit });
 
   // Add no-cache headers to prevent browser caching
   res.set({
@@ -1069,12 +1064,6 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
     image: order.items?.[0]?.image || ''
   };
 
-  console.log('\n📦 ORDER DETAILS DEBUG (Backend):');
-  console.log('Order ID:', order._id);
-  console.log('Order Number:', order.orderNumber);
-  console.log('Raw pricing from DB:', JSON.stringify(order.pricing, null, 2));
-  console.log('Transformed pricing:', JSON.stringify(transformedOrder.pricing, null, 2));
-
   res.status(200).json({
     status: 'success',
     data: transformedOrder
@@ -1094,8 +1083,6 @@ exports.getPOSMenuItems = catchAsync(async (req, res, next) => {
   if (search) {
     query.name = { $regex: search, $options: 'i' };
   }
-
-  console.log('\n🔍 POS Menu Query:', JSON.stringify(query));
   
   // Get items with minimal fields for fast loading
   const items = await MenuItem.find(query)
@@ -1106,32 +1093,6 @@ exports.getPOSMenuItems = catchAsync(async (req, res, next) => {
 
   const total = await MenuItem.countDocuments(query);
   
-  // Log items by category
-  const itemsByCategory = items.reduce((acc, item) => {
-    const cat = item.categories?.find(c => c !== 'All') || 'Uncategorized';
-    acc[cat] = (acc[cat] || 0) + 1;
-    return acc;
-  }, {});
-  
-  console.log('📦 POS Items Found:', items.length, 'Total:', total);
-  console.log('📊 By Category:', itemsByCategory);
-  
-  // Check unavailable items for debugging
-  if (!category || category === 'All' || category === 'Biryani') {
-    const unavailableQuery = { isAvailable: false };
-    if (category && category !== 'All') {
-      unavailableQuery.categories = category;
-    }
-    const unavailableItems = await MenuItem.find(unavailableQuery).select('name categories isAvailable').lean();
-    if (unavailableItems.length > 0) {
-      console.log('⚠️  Unavailable Items (not shown in POS):', unavailableItems.length);
-      unavailableItems.forEach(item => {
-        console.log(`   - ${item.name} (${item.categories?.join(', ')})`);
-      });
-    }
-  }
-  console.log('');
-
   // Transform to POS format
   const posItems = items.map(item => {
     // Get the first category that's not "All"
@@ -1162,9 +1123,6 @@ exports.getPOSMenuItems = catchAsync(async (req, res, next) => {
 });
 
 exports.createAdminOrder = catchAsync(async (req, res, next) => {
-  console.log('\n📦 Creating admin order...');
-  console.log('Request body:', JSON.stringify(req.body, null, 2));
-  
   const {
     items,
     customer,
@@ -1175,26 +1133,20 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
 
   // Validate required fields
   if (!items || items.length === 0) {
-    console.log('❌ Validation failed: No items');
     return next(new AppError('Please add items to the order', 400));
   }
 
   if (!customer || !customer.name || !customer.phone) {
-    console.log('❌ Validation failed: Missing customer info');
     return next(new AppError('Customer name and phone are required', 400));
   }
 
   if (orderType === 'DELIVERY' && !deliveryAddress) {
-    console.log('❌ Validation failed: No delivery address for DELIVERY order');
     return next(new AppError('Delivery address is required for delivery orders', 400));
   }
 
   // Separate regular menu items from custom/open menu items
-  console.log('🔍 Validating menu items...');
   const regularItems = items.filter(item => item.menuItem && item.menuItem !== 'custom');
   const customItems = items.filter(item => !item.menuItem || item.menuItem === 'custom');
-  
-  console.log(`📦 Regular items: ${regularItems.length}, Custom items: ${customItems.length}`);
 
   // Validate regular menu items
   let menuItems = [];
@@ -1205,11 +1157,8 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
     menuItems = await MenuItem.find({ _id: { $in: uniqueMenuItemIds } }).lean();
 
     if (menuItems.length !== uniqueMenuItemIds.length) {
-      console.log('❌ Some menu items not found');
-      console.log(`Expected ${uniqueMenuItemIds.length} unique items, found ${menuItems.length}`);
       return next(new AppError('Some menu items not found', 404));
     }
-    console.log(`✅ All ${menuItems.length} unique menu items found (${regularItems.length} total items with portions)`);
   }
 
   // Calculate pricing
@@ -1265,32 +1214,23 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
       subtotal,
       isCustom: true
     });
-    console.log(`✅ Added custom item: ${item.name} @ ₹${itemPrice} x ${item.quantity}`);
   });
 
   // Get settings for tax and delivery
-  console.log('⚙️ Fetching settings...');
   const settings = await Settings.findOne();
-  console.log('Settings found:', settings ? 'Yes' : 'No');
   
   // Use taxRate and deliveryCharge from Settings model
   const taxRate = settings?.taxRate || 0;
   const deliveryFee = orderType === 'DELIVERY' ? (settings?.deliveryCharge || 0) : 0;
-  
-  console.log(`💰 Pricing: itemsTotal=${itemsTotal}, taxRate=${taxRate}%, deliveryFee=${deliveryFee}`);
 
   const tax = (itemsTotal * taxRate) / 100;
   const finalAmount = itemsTotal + tax + deliveryFee;
-  
-  console.log(`💵 Final calculation: ${itemsTotal} + ${tax} (tax) + ${deliveryFee} (delivery) = ${finalAmount}`);
 
   // Generate order number
   const orderCount = await Order.countDocuments();
   const orderNumber = `ORD-${String(orderCount + 1).padStart(6, '0')}`;
-  console.log(`📋 Order number generated: ${orderNumber}`);
 
   // Create order
-  console.log('💾 Creating order in database...');
   const order = await Order.create({
     orderNumber,
     customer: {
@@ -1322,8 +1262,6 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
     placedByUser: req.user?._id,
     estimatedDeliveryTime: new Date(Date.now() + 45 * 60000) // 45 minutes
   });
-  
-  console.log(`✅ Order created successfully: ${order._id}\n`);
 
   // Emit socket event for new order
   try {
@@ -1353,10 +1291,6 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
 exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   const { status } = req.body;
   
-  console.log(`\n📦 Updating order ${req.params.id}`);
-  console.log(`   Current request status: ${status}`);
-  console.log(`   Valid enum values: PENDING, ACCEPTED, READY, ASSIGNED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED, COMPLETED`);
-  
   const order = await Order.findByIdAndUpdate(
     req.params.id,
     { 
@@ -1373,14 +1307,11 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   );
 
   if (!order) {
-    console.log(`❌ Order not found: ${req.params.id}\n`);
     return res.status(404).json({
       status: 'error',
       message: 'Order not found'
     });
   }
-
-  console.log(`✅ Order status updated successfully to: ${order.status}\n`);
 
   res.status(200).json({
     status: 'success',
@@ -1408,17 +1339,6 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   } = req.body;
 
   // Validate menu items exist and are available
-  logger.info('\n========== BACKEND RECEIVED ORDER ==========');
-  logger.info('Items from frontend:');
-  items.forEach((item, idx) => {
-    logger.info(`\n  Item ${idx + 1}:`);
-    logger.info(`    - ID: ${item.menuItem}`);
-    logger.info(`    - Quantity: ${item.quantity}`);
-    logger.info(`    - Price: ${item.price || 'NOT PROVIDED'}`);
-    logger.info(`    - PORTION: ${item.portion || 'NOT PROVIDED'}`);
-    logger.info(`    - Full item:`, JSON.stringify(item, null, 2));
-  });
-  logger.info('==========================================\n');
   
   const menuItemIds = items.map((item) => item.menuItem);
   logger.info(`Received ${menuItemIds.length} menu item IDs: ${menuItemIds.join(', ')}`);
@@ -1485,12 +1405,7 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     let itemPrice = item.price || 0;
     if (!itemPrice && menuItem.priceVariants && menuItem.priceVariants.length > 0) {
       itemPrice = menuItem.priceVariants[0].price;
-      logger.info(`  ⚠️  Using fallback price from priceVariants[0]: ${itemPrice}`);
-    } else if (item.price) {
-      logger.info(`  ✓ Using price from frontend: ${item.price}`);
     }
-    
-    logger.info(`Item: ${menuItem.name}, Final Price: ${itemPrice}, Quantity: ${item.quantity}, Subtotal: ${itemPrice * item.quantity}`);
 
     const customizationPrice = item.customizations
       ? item.customizations.reduce((sum, c) => sum + (c.price || 0), 0)
@@ -1499,7 +1414,7 @@ exports.createOrder = catchAsync(async (req, res, next) => {
 
     subtotal += itemTotal;
 
-    const orderItem = {
+    return {
       menuItemId: menuItem._id,
       name: menuItem.name,
       image: menuItem.image,
@@ -1510,15 +1425,6 @@ exports.createOrder = catchAsync(async (req, res, next) => {
       customizations: item.customizations || [],
       subtotal: itemTotal,
     };
-
-    logger.info('\n📦 Order Item being saved to DB:');
-    logger.info(`  - Name: ${orderItem.name}`);
-    logger.info(`  - PORTION: "${orderItem.portion}"`);
-    logger.info(`  - Price: ${orderItem.price}`);
-    logger.info(`  - Quantity: ${orderItem.quantity}`);
-    logger.info(`  - Full orderItem:`, JSON.stringify(orderItem, null, 2));
-
-    return orderItem;
   });
 
   // Check minimum order amount

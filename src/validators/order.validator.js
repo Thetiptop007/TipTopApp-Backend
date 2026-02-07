@@ -28,6 +28,9 @@ exports.createOrderSchema = Joi.object({
           'number.base': 'Price must be a number',
           'number.min': 'Price cannot be negative',
         }),
+        portion: Joi.string().trim().allow('').optional().messages({
+          'string.base': 'Portion must be a string',
+        }),
         customizations: Joi.array().items(
           Joi.object({
             name: Joi.string().required(),
