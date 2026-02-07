@@ -779,7 +779,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
     createdAt: { $gte: startOfDay, $lte: endOfDay },
     status: { $in: inactiveStatuses }
   })
-    .select('orderNumber customer.name customer.phone pricing.finalAmount status orderType createdAt')
+    .select('orderNumber customer.name customer.phone pricing.finalAmount status orderType createdAt items deliveryAddress')
     .lean()
     .sort({ createdAt: -1 });
 
@@ -875,12 +875,18 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       customer: `${order.customer?.name || 'N/A'}`,
       phone: order.customer?.phone || 'N/A',
       orderType: order.orderType || 'DELIVERY',
-      items: [], // Will be populated on expand
-      itemCount: 0,
+      items: [], // Empty for performance - will be populated on expand
+      itemCount: order.items?.length || 0,
       total: order.pricing?.finalAmount || 0,
       status: statusMap[order.status] || order.status,
       date: order.createdAt.toISOString().split('T')[0],
-      time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+      time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      address: {
+        street: order.deliveryAddress?.street || '',
+        city: order.deliveryAddress?.city || '',
+        state: order.deliveryAddress?.state || '',
+        zip: order.deliveryAddress?.zip || order.deliveryAddress?.postalCode || ''
+      }
     };
   });
 
