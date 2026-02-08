@@ -418,6 +418,14 @@ userSchema.methods.addRole = function (role) {
   }
 };
 
+// Remove a role from user
+userSchema.methods.removeRole = function (role) {
+  if (!this.roles) {
+    return;
+  }
+  this.roles = this.roles.filter(r => r !== role);
+};
+
 // Generate refresh token
 userSchema.methods.generateRefreshToken = function () {
   return jwt.sign({ id: this._id, role: this.role }, process.env.JWT_REFRESH_SECRET, {

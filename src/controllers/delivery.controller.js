@@ -317,22 +317,90 @@ exports.deleteDeliveryPartner = catchAsync(async (req, res, next) => {
 
   // Check if partner has active orders
   const activeOrders = await Order.countDocuments({
-    deliveryPartner: id,
-    status: { $in: ['OUT_FOR_DELIVERY'] }
+    'deliveryPartner.id': id,
+    status: { $in: ['OUT_FOR_DELIVERY', 'CONFIRMED', 'PREPARING'] }
   });
 
   if (activeOrders > 0) {
     return next(new AppError('Cannot delete delivery partner with active orders', 400));
   }
 
-  // Delete the delivery partner
-  await User.findByIdAndDelete(id);
+  // Check if user has multiple roles
+  const hasMultipleRoles = deliveryPartner.roles && deliveryPartner.roles.length > 1;
 
-  logger.info(`Delivery partner deleted: ${deliveryPartner.email.address} by admin ${req.user.email.address}`);
+  if (hasMultipleRoles) {
+    // Just remove delivery role, keep the user account
+    deliveryPartner.removeRole('delivery');
+    
+    // Clear delivery data
+    deliveryPartner.deliveryData = undefined;
+    
+    // If user only has one role left, set it as primary role
+    if (deliveryPartner.roles.length === 1) {
+      deliveryPartner.role = deliveryPartner.roles[0];
+    }
+    
+    await deliveryPartner.save({ validateBeforeSave: false });
+    
+    logger.info(`Delivery role removed from user: ${deliveryPartner.email.address} by admin ${req.user.email.address}`);
+    logger.info(`User still has roles: ${deliveryPartner.roles.join(', ')}`);
+    
+    // Audit log
+    await AuditLog.create({
+      userId: deliveryPartner._id,
+      performedBy: req.user._id,
+      action: 'ROLE_REMOVED',
+      resourceType: 'User',
+      resourceId: deliveryPartner._id,
+      details: {
+        reason: 'Delivery partner deletion',
+        before: { roles: [...deliveryPartner.roles, 'delivery'] },
+        after: { roles: deliveryPartner.roles },
+        roleRemoved: 'delivery'
+      },
+      metadata: {
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        requestMethod: req.method,
+        requestPath: req.originalUrl
+      },
+      severity: 'HIGH',
+      status: 'SUCCESS'
+    });
+  } else {
+    // User only has delivery role - delete entire account
+    await User.findByIdAndDelete(id);
+    
+    logger.info(`Delivery partner account deleted: ${deliveryPartner.email.address} by admin ${req.user.email.address}`);
+    
+    // Audit log
+    await AuditLog.create({
+      userId: deliveryPartner._id,
+      performedBy: req.user._id,
+      action: 'ACCOUNT_DELETE',
+      resourceType: 'User',
+      resourceId: deliveryPartner._id,
+      details: {
+        reason: 'Delivery partner deletion - no other roles',
+        deletedEmail: deliveryPartner.email.address,
+        deletedPhone: deliveryPartner.phone.number
+      },
+      metadata: {
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        requestMethod: req.method,
+        requestPath: req.originalUrl
+      },
+      severity: 'CRITICAL',
+      status: 'SUCCESS'
+    });
+  }
 
   res.status(200).json({
     status: 'success',
-    message: 'Delivery partner deleted successfully',
+    message: hasMultipleRoles 
+      ? 'Delivery role removed successfully' 
+      : 'Delivery partner deleted successfully',
   });
 });
 
