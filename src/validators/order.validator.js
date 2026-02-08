@@ -293,3 +293,110 @@ exports.validateQuery = (schema) => {
     next();
   };
 };
+
+/**
+ * Validation schema for guest order creation (no authentication required)
+ */
+exports.createGuestOrderSchema = Joi.object({
+  customer: Joi.object({
+    name: Joi.string().trim().min(2).max(100).required().messages({
+      'string.empty': 'Customer name is required',
+      'string.min': 'Customer name must be at least 2 characters',
+      'string.max': 'Customer name is too long (max 100 characters)',
+    }),
+    phone: Joi.string()
+      .pattern(/^[6-9]\d{9}$/)
+      .required()
+      .messages({
+        'string.empty': 'Phone number is required',
+        'string.pattern.base': 'Invalid phone number format',
+      }),
+    email: Joi.string().email().optional().allow('').messages({
+      'string.email': 'Invalid email format',
+    }),
+  }).required(),
+
+  items: Joi.array()
+    .items(
+      Joi.object({
+        menuItem: Joi.string()
+          .regex(/^[0-9a-fA-F]{24}$/)
+          .required()
+          .messages({
+            'string.empty': 'Menu item ID is required',
+            'string.pattern.base': 'Invalid menu item ID',
+          }),
+        quantity: Joi.number().integer().min(1).max(50).required().messages({
+          'number.min': 'Quantity must be at least 1',
+          'number.max': 'Quantity cannot exceed 50',
+          'any.required': 'Quantity is required',
+        }),
+        price: Joi.number().min(0).optional().messages({
+          'number.base': 'Price must be a number',
+          'number.min': 'Price cannot be negative',
+        }),
+        portion: Joi.string().trim().allow('').optional().messages({
+          'string.base': 'Portion must be a string',
+        }),
+      })
+    )
+    .min(1)
+    .required()
+    .messages({
+      'array.min': 'At least one item is required',
+      'any.required': 'Order items are required',
+    }),
+
+  orderType: Joi.string()
+    .valid('DELIVERY', 'TAKEAWAY')
+    .default('DELIVERY')
+    .messages({
+      'any.only': 'Order type must be DELIVERY or TAKEAWAY',
+    }),
+
+  deliveryAddress: Joi.when('orderType', {
+    is: 'DELIVERY',
+    then: Joi.object({
+      street: Joi.string().trim().min(5).max(200).required().messages({
+        'string.empty': 'Street address is required',
+        'string.min': 'Street address must be at least 5 characters',
+        'string.max': 'Street address is too long (max 200 characters)',
+      }),
+      apartment: Joi.string().trim().max(100).allow('').optional().messages({
+        'string.max': 'Apartment info is too long (max 100 characters)',
+      }),
+      city: Joi.string().trim().min(2).max(50).required().messages({
+        'string.empty': 'City is required',
+        'string.min': 'City name must be at least 2 characters',
+        'string.max': 'City name is too long (max 50 characters)',
+      }),
+      state: Joi.string().trim().min(2).max(50).required().messages({
+        'string.empty': 'State is required',
+        'string.min': 'State name must be at least 2 characters',
+        'string.max': 'State name is too long (max 50 characters)',
+      }),
+      zipCode: Joi.string()
+        .pattern(/^\d{6}$/)
+        .required()
+        .messages({
+          'string.empty': 'Zip code is required',
+          'string.pattern.base': 'Zip code must be exactly 6 digits',
+        }),
+      landmark: Joi.string().trim().max(100).allow('').optional().messages({
+        'string.max': 'Landmark is too long (max 100 characters)',
+      }),
+    }).required(),
+    otherwise: Joi.optional(),
+  }),
+
+  paymentMethod: Joi.string()
+    .valid('COD', 'ONLINE')
+    .default('COD')
+    .messages({
+      'any.only': 'Payment method must be COD or ONLINE',
+    }),
+
+  specialInstructions: Joi.string().trim().max(500).allow('').optional().messages({
+    'string.max': 'Special instructions cannot exceed 500 characters',
+  }),
+});

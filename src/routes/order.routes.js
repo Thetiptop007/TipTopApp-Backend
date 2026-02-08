@@ -20,7 +20,12 @@ const router = express.Router();
 ===================================================== */
 
 // Guest order creation (no authentication) - Check if shop is open
-router.post('/guest/create', checkShopOpen, orderController.createGuestOrder);
+router.post(
+  '/guest/create',
+  checkShopOpen,
+  orderValidator.validate(orderValidator.createGuestOrderSchema),
+  orderController.createGuestOrder
+);
 
 /* =====================================================
    THERMAL PRINTER SERVICE ROUTES (No Auth Required)

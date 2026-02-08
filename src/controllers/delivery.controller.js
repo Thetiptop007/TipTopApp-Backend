@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const Order = require('../models/Order');
 const DeliverySession = require('../models/DeliverySession');
+const AuditLog = require('../models/AuditLog');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
@@ -30,33 +31,56 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
   const normalizedPhone = phone.replace(/^\+91/, '');
   logger.info(`  - Normalized Phone: ${normalizedPhone}`);
 
-  // Check if user already exists (only active users)
-  const existingUser = await User.findOne({ 
+  // SECURITY FIX: Check if BOTH email AND phone match to prevent account takeover
+  // First, check if exact match exists (same email AND phone)
+  const exactMatch = await User.findOne({ 
+    'email.address': email,
     $or: [
-      { 'email.address': email },
       { 'phone.number': normalizedPhone },
       { 'phone.number': phone }
     ],
     isActive: true
   }).select('+password');
 
+  // Then check if email OR phone exists separately (potential conflict)
+  const emailExists = await User.findOne({ 
+    'email.address': email,
+    isActive: true
+  });
+  
+  const phoneExists = await User.findOne({ 
+    $or: [
+      { 'phone.number': normalizedPhone },
+      { 'phone.number': phone }
+    ],
+    isActive: true
+  });
+
+  // CRITICAL SECURITY CHECK: Prevent cross-account contamination
+  if (emailExists && phoneExists && !emailExists._id.equals(phoneExists._id)) {
+    logger.error(`[REGISTER] SECURITY ALERT - Email and phone belong to different users!`);
+    logger.error(`  - Email ${email} belongs to user: ${emailExists._id} (${emailExists.email.address})`);
+    logger.error(`  - Phone ${normalizedPhone} belongs to user: ${phoneExists._id} (${phoneExists.email.address})`);
+    return next(new AppError('Email and phone number belong to different accounts. Please use matching credentials.', 400));
+  }
+
   let deliveryPartner;
 
-  if (existingUser) {
-    logger.info(`[REGISTER] Active user found - Email: ${existingUser.email.address}, Phone: ${existingUser.phone.number}`);
+  if (exactMatch) {
+    logger.info(`[REGISTER] Active user found with matching email AND phone - Email: ${exactMatch.email.address}, Phone: ${exactMatch.phone.number}`);
     
     // Check if user already has delivery role
-    if (existingUser.roles && existingUser.roles.includes('delivery')) {
+    if (exactMatch.roles && exactMatch.roles.includes('delivery')) {
       logger.warn(`[REGISTER] User already has delivery role`);
       return next(new AppError('User is already registered as a delivery partner', 400));
     }
 
-    // Add delivery role to existing user
+    // Safe to add delivery role - same person
     logger.info(`[REGISTER] Adding delivery role to existing user`);
-    existingUser.addRole('delivery');
+    exactMatch.addRole('delivery');
     
     // Update delivery data
-    existingUser.deliveryData = {
+    exactMatch.deliveryData = {
       vehicleInfo: {
         type: vehicleType,
       },
@@ -66,8 +90,30 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
       totalEarnings: 0,
     };
 
-    await existingUser.save();
-    deliveryPartner = existingUser;
+    await exactMatch.save();
+    deliveryPartner = exactMatch;
+    
+    // AUDIT LOG: Role addition
+    await AuditLog.create({
+      user: exactMatch._id,
+      action: 'ROLE_ADDED',
+      entityType: 'User',
+      entityId: exactMatch._id,
+      changes: {
+        field: 'roles',
+        oldValue: exactMatch.roles.filter(r => r !== 'delivery'),
+        newValue: exactMatch.roles
+      },
+      performedBy: req.user._id,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      severity: 'high',
+      metadata: {
+        roleAdded: 'delivery',
+        reason: 'Delivery partner registration',
+        vehicleType: vehicleType
+      }
+    });
     
     logger.info(`[REGISTER] SUCCESS - Delivery role added to existing user:`);
   } else {
@@ -108,6 +154,24 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
     });
 
     logger.info(`[REGISTER] SUCCESS - Delivery partner created:`);
+    
+    // AUDIT LOG: New delivery partner account
+    await AuditLog.create({
+      user: deliveryPartner._id,
+      action: 'USER_CREATED',
+      entityType: 'User',
+      entityId: deliveryPartner._id,
+      performedBy: req.user._id,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      severity: 'medium',
+      metadata: {
+        role: 'delivery',
+        vehicleType: vehicleType,
+        email: email,
+        phone: normalizedPhone
+      }
+    });
   }
   logger.info(`  - ID: ${deliveryPartner._id}`);
   logger.info(`  - Name: ${deliveryPartner.name.first} ${deliveryPartner.name.last}`);

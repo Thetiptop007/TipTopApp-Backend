@@ -612,12 +612,13 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   const {
     customer,
     items,
-    orderType,
+    orderType = 'DELIVERY',
     deliveryAddress,
     paymentMethod = 'COD',
+    specialInstructions,
   } = req.body;
 
-  // Validation
+  // Validation handled by validator middleware, but double-check critical fields
   if (!customer || !customer.name || !customer.phone) {
     return next(new AppError('Customer name and phone are required', 400));
   }
@@ -630,12 +631,19 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     return next(new AppError('Delivery address is required for delivery orders', 400));
   }
 
-  // Validate menu items
+  // Validate menu items exist and are available
   const menuItemIds = items.map((item) => item.menuItem);
-  const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
+  
+  // Get unique menu item IDs to avoid duplicate queries
+  const uniqueMenuItemIds = [...new Set(menuItemIds)];
+  const menuItems = await MenuItem.find({ _id: { $in: uniqueMenuItemIds }, isActive: true });
 
-  if (menuItems.length !== menuItemIds.length) {
-    return next(new AppError('Some menu items do not exist', 400));
+  // Check if all unique menu items were found
+  if (menuItems.length !== uniqueMenuItemIds.length) {
+    const foundIds = menuItems.map(mi => mi._id.toString());
+    const missingIds = uniqueMenuItemIds.filter(id => !foundIds.includes(id));
+    logger.warn(`Missing menu items: ${missingIds.join(', ')}`);
+    return next(new AppError('Some menu items do not exist or are not available', 400));
   }
 
   // Check if all items are available
@@ -647,7 +655,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   // Get settings for tax and delivery charges
   const settings = await Settings.getSettings();
 
-  // Create or find customer user
+  // Create or find customer user (for guest orders, we create a basic user record)
   let customerUser = await User.findOne({ 'phone.number': customer.phone });
 
   if (!customerUser) {
@@ -655,7 +663,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     const firstName = nameParts[0] || 'Customer';
     const lastName = nameParts.slice(1).join(' ') || 'Guest';
     
-    const email = `${customer.phone}@guest.thetiptop.com`;
+    const email = customer.email || `${customer.phone}@guest.thetiptop.com`;
     const randomPassword = Math.random().toString(36).slice(-10) + Math.random().toString(36).slice(-10);
     
     customerUser = await User.create({
@@ -669,21 +677,26 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
       },
       email: {
         address: email,
-        isVerified: true,
+        isVerified: customer.email ? false : true, // Auto-verify temp emails
       },
       password: randomPassword,
       role: 'customer',
       isActive: true,
     });
-    logger.info(`Created new guest customer: ${customer.name} (${customer.phone})`);
+    logger.info(`✨ Created new guest customer: ${customer.name} (${customer.phone})`);
   }
 
   // Calculate pricing
   let itemsTotal = 0;
   const orderItems = items.map((item) => {
     const menuItem = menuItems.find((mi) => mi._id.toString() === item.menuItem);
+    if (!menuItem) {
+      throw new AppError(`Menu item not found: ${item.menuItem}`, 400);
+    }
+    
     const portion = item.portion || 'Full';
     
+    // Get price from item or calculate from menu item variants
     let price;
     if (item.price) {
       price = item.price;
@@ -692,60 +705,101 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
       price = variant?.price || menuItem.portions?.[portion] || menuItem.basePrice;
     }
 
-    const itemTotal = price * item.quantity;
-    itemsTotal += itemTotal;
+    const itemSubtotal = price * item.quantity;
+    itemsTotal += itemSubtotal;
 
     return {
-      menuItem: menuItem._id,
+      menuItemId: menuItem._id,
       name: menuItem.name,
-      portion,
+      image: menuItem.images?.[0] || '',
+      description: menuItem.description || '',
+      portion: portion,
+      price: price,
       quantity: item.quantity,
-      price,
-      total: itemTotal,
+      customizations: [],
+      subtotal: itemSubtotal,
+      isCustom: false,
     };
   });
 
-  // Calculate tax and delivery
-  const taxAmount = settings.taxRate ? (itemsTotal * settings.taxRate) / 100 : 0;
-  const deliveryCharge = orderType === 'DELIVERY' ? settings.deliveryCharge || 0 : 0;
-  const total = itemsTotal + taxAmount + deliveryCharge;
+  // Calculate tax and delivery fee based on settings
+  const gst = settings.taxRate ? (itemsTotal * settings.taxRate) / 100 : 0;
+  const deliveryFee = orderType === 'DELIVERY' ? (settings.deliveryCharge || 0) : 0;
+  const platformFee = settings.platformFee || 0;
+  const packagingFee = settings.packagingFee || 0;
+  
+  const finalAmount = itemsTotal + gst + deliveryFee + platformFee + packagingFee;
 
-  // Create order
+  // Prepare delivery address with coordinates
+  let formattedDeliveryAddress = undefined;
+  if (orderType === 'DELIVERY' && deliveryAddress) {
+    formattedDeliveryAddress = {
+      street: deliveryAddress.street,
+      apartment: deliveryAddress.apartment || '',
+      city: deliveryAddress.city,
+      state: deliveryAddress.state,
+      zipCode: deliveryAddress.zipCode,
+      landmark: deliveryAddress.landmark || '',
+      coordinates: {
+        type: 'Point',
+        coordinates: [0, 0], // Guest orders won't have GPS coordinates from website
+      },
+      deliveryInstructions: specialInstructions || '',
+    };
+  }
+
+  // Create order with proper schema structure
   const order = await Order.create({
     customer: {
       id: customerUser._id,
       name: customer.name,
       phone: customer.phone,
+      email: customer.email || '',
     },
     items: orderItems,
     pricing: {
-      itemsTotal,
-      taxRate: settings.taxRate || 0,
-      taxAmount,
-      deliveryCharge,
-      total,
+      itemsTotal: itemsTotal,
+      deliveryFee: deliveryFee,
+      platformFee: platformFee,
+      packagingFee: packagingFee,
+      gst: gst,
+      discount: 0,
+      promoDiscount: 0,
+      loyaltyPointsUsed: 0,
+      loyaltyDiscount: 0,
+      finalAmount: finalAmount,
+      roundOff: 0,
     },
-    orderType,
-    deliveryAddress: orderType === 'DELIVERY' ? deliveryAddress : undefined,
-    paymentMethod,
-    paymentStatus: 'PENDING',
-    status: 'NEW',
+    deliveryAddress: formattedDeliveryAddress,
+    orderType: orderType,
+    placedBy: 'CUSTOMER', // Guest orders are still customer-placed
+    status: 'PENDING',
     statusHistory: [
       {
-        status: 'NEW',
+        status: 'PENDING',
         timestamp: new Date(),
-        notes: 'Guest order created',
+        notes: 'Guest order placed from website',
       },
     ],
+    paymentMethod: paymentMethod,
+    paymentStatus: paymentMethod === 'COD' ? 'PENDING' : 'PENDING',
+    specialInstructions: specialInstructions || '',
+    contactlessDelivery: false,
+    metadata: {
+      orderSource: 'web',
+      deviceType: 'web-guest',
+      userAgent: req.headers['user-agent'] || '',
+      ipAddress: req.ip || '',
+    },
   });
 
-  logger.info(`✅ Guest order created: ${order.orderNumber} for ${customer.name}`);
+  logger.info(`✅ Guest order created: ${order.orderNumber} for ${customer.name} (${customer.phone})`);
 
-  // Emit socket event for admin
-  emitOrderUpdate({
-    type: 'NEW_ORDER',
-    order: order,
-  });
+  // Emit socket event for real-time admin panel updates
+  emitNewOrder(order);
+
+  // Populate order for response
+  await order.populate('items.menuItemId');
 
   res.status(201).json({
     status: 'success',

@@ -21,9 +21,9 @@ async function upsertAdmin() {
 
     await connectDB();
 
-    const email = 'naitikkumar2408@gmail.com';
+    const email = 'thetiptop007@gmail.com';
     const phone = '9060557296';
-    const password = 'Nhs16@241';
+    const password = '1234567890';
 
     // Search by email or phone
     let user = await User.findOne({
@@ -36,7 +36,7 @@ async function upsertAdmin() {
       user.email = { address: email.toLowerCase(), isVerified: true };
       user.phone = { number: phone, isVerified: true };
       user.password = password; // will be hashed by pre-save hook
-      user.name = user.name || { first: 'Naitik', last: 'Kumar' };
+      user.name = user.name || { first: 'Admin', last: 'User' };
       user.isActive = true;
       await user.save();
       console.log(`Updated user (${user._id}) as admin.`);
@@ -47,7 +47,7 @@ async function upsertAdmin() {
         phone: { number: phone, isVerified: true },
         password,
         role: 'admin',
-        name: { first: 'Naitik', last: 'Kumar' },
+        name: { first: 'Admin', last: 'User' },
         isActive: true,
       });
 
