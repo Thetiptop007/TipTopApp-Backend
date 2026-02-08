@@ -64,23 +64,27 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
     logger.error(`  - Phone ${normalizedPhone} belongs to user: ${phoneExists._id} (${phoneExists.email.address})`);
     
     await AuditLog.create({
-      action: 'SECURITY_VIOLATION_ATTEMPT',
-      entityType: 'User',
-      entityId: phoneExists._id,
-      changes: {
+      userId: phoneExists._id,
+      performedBy: req.user._id,
+      action: 'SECURITY_VIOLATION',
+      resourceType: 'User',
+      resourceId: phoneExists._id,
+      details: {
+        reason: 'delivery_registration_with_mismatched_credentials',
         attemptedEmail: email,
         existingEmail: phoneExists.email.address,
         attemptedPhone: normalizedPhone,
-        existingPhone: phoneExists.phone.number
-      },
-      performedBy: req.user._id,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      severity: 'critical',
-      metadata: {
-        action: 'delivery_registration_with_mismatched_credentials',
+        existingPhone: phoneExists.phone.number,
         blocked: true
-      }
+      },
+      metadata: {
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        requestMethod: req.method,
+        requestPath: req.originalUrl
+      },
+      severity: 'CRITICAL',
+      status: 'FAILED'
     });
     
     return next(new AppError('Email and phone number belong to different accounts. Please use matching credentials.', 400));
@@ -94,23 +98,26 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
     logger.error(`  - Attempted email: ${email} (does not match existing account)`);
     
     await AuditLog.create({
-      action: 'SECURITY_VIOLATION_ATTEMPT',
-      entityType: 'User',
-      entityId: phoneExists._id,
-      changes: {
+      userId: phoneExists._id,
+      performedBy: req.user._id,
+      action: 'SECURITY_VIOLATION',
+      resourceType: 'User',
+      resourceId: phoneExists._id,
+      details: {
+        reason: 'delivery_registration_with_existing_phone',
         attemptedEmail: email,
         existingEmail: phoneExists.email.address,
         attemptedPhone: normalizedPhone,
-        reason: 'phone_already_registered'
-      },
-      performedBy: req.user._id,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      severity: 'critical',
-      metadata: {
-        action: 'delivery_registration_with_existing_phone',
         blocked: true
-      }
+      },
+      metadata: {
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        requestMethod: req.method,
+        requestPath: req.originalUrl
+      },
+      severity: 'CRITICAL',
+      status: 'FAILED'
     });
     
     return next(new AppError(`This phone number is already registered. To add delivery role to existing account, use the email: ${phoneExists.email.address}`, 400));
@@ -124,23 +131,26 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
     logger.error(`  - Attempted phone: ${normalizedPhone} (does not match existing account)`);
     
     await AuditLog.create({
-      action: 'SECURITY_VIOLATION_ATTEMPT',
-      entityType: 'User',
-      entityId: emailExists._id,
-      changes: {
+      userId: emailExists._id,
+      performedBy: req.user._id,
+      action: 'SECURITY_VIOLATION',
+      resourceType: 'User',
+      resourceId: emailExists._id,
+      details: {
+        reason: 'delivery_registration_with_existing_email',
         attemptedPhone: normalizedPhone,
         existingPhone: emailExists.phone.number,
         email: email,
-        reason: 'email_already_registered'
-      },
-      performedBy: req.user._id,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      severity: 'critical',
-      metadata: {
-        action: 'delivery_registration_with_existing_email',
         blocked: true
-      }
+      },
+      metadata: {
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        requestMethod: req.method,
+        requestPath: req.originalUrl
+      },
+      severity: 'CRITICAL',
+      status: 'FAILED'
     });
     
     return next(new AppError(`This email is already registered. To add delivery role to existing account, use the phone: ${emailExists.phone.number}`, 400));
@@ -177,24 +187,26 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
     
     // AUDIT LOG: Role addition
     await AuditLog.create({
-      user: exactMatch._id,
-      action: 'ROLE_ADDED',
-      entityType: 'User',
-      entityId: exactMatch._id,
-      changes: {
-        field: 'roles',
-        oldValue: exactMatch.roles.filter(r => r !== 'delivery'),
-        newValue: exactMatch.roles
-      },
+      userId: exactMatch._id,
       performedBy: req.user._id,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      severity: 'high',
-      metadata: {
-        roleAdded: 'delivery',
+      action: 'ROLE_ADDED',
+      resourceType: 'User',
+      resourceId: exactMatch._id,
+      details: {
         reason: 'Delivery partner registration',
-        vehicleType: vehicleType
-      }
+        before: { roles: exactMatch.roles.filter(r => r !== 'delivery') },
+        after: { roles: exactMatch.roles },
+        roleAdded: 'delivery',
+        additionalInfo: { vehicleType: vehicleType }
+      },
+      metadata: {
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        requestMethod: req.method,
+        requestPath: req.originalUrl
+      },
+      severity: 'HIGH',
+      status: 'SUCCESS'
     });
     
     logger.info(`[REGISTER] SUCCESS - Delivery role added to existing user:`);
@@ -239,20 +251,24 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
     
     // AUDIT LOG: New delivery partner account
     await AuditLog.create({
-      user: deliveryPartner._id,
-      action: 'USER_CREATED',
-      entityType: 'User',
-      entityId: deliveryPartner._id,
+      userId: deliveryPartner._id,
       performedBy: req.user._id,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      severity: 'medium',
+      action: 'ACCOUNT_CREATE',
+      resourceType: 'User',
+      resourceId: deliveryPartner._id,
+      details: {
+        reason: 'New delivery partner registration',
+        roles: ['delivery'],
+        vehicleType: vehicleType
+      },
       metadata: {
-        role: 'delivery',
-        vehicleType: vehicleType,
-        email: email,
-        phone: normalizedPhone
-      }
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        requestMethod: req.method,
+        requestPath: req.originalUrl
+      },
+      severity: 'MEDIUM',
+      status: 'SUCCESS'
     });
   }
   logger.info(`  - ID: ${deliveryPartner._id}`);

@@ -27,6 +27,8 @@ const auditLogSchema = new mongoose.Schema(
       type: String,
       enum: [
         'ROLE_CHANGE',
+        'ROLE_ADDED',
+        'ROLE_REMOVED',
         'PASSWORD_RESET',
         'PASSWORD_CHANGE',
         'ACCOUNT_BLOCK',
@@ -46,6 +48,8 @@ const auditLogSchema = new mongoose.Schema(
         'LOGOUT',
         'TOKEN_REFRESH',
         'PERMISSION_DENIED',
+        'SECURITY_ALERT',
+        'SECURITY_VIOLATION',
       ],
       required: true,
       index: true,
