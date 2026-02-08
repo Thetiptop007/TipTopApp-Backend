@@ -57,11 +57,93 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
   });
 
   // CRITICAL SECURITY CHECK: Prevent cross-account contamination
+  // If email and phone belong to different accounts, reject
   if (emailExists && phoneExists && !emailExists._id.equals(phoneExists._id)) {
     logger.error(`[REGISTER] SECURITY ALERT - Email and phone belong to different users!`);
     logger.error(`  - Email ${email} belongs to user: ${emailExists._id} (${emailExists.email.address})`);
     logger.error(`  - Phone ${normalizedPhone} belongs to user: ${phoneExists._id} (${phoneExists.email.address})`);
+    
+    await AuditLog.create({
+      action: 'SECURITY_VIOLATION_ATTEMPT',
+      entityType: 'User',
+      entityId: phoneExists._id,
+      changes: {
+        attemptedEmail: email,
+        existingEmail: phoneExists.email.address,
+        attemptedPhone: normalizedPhone,
+        existingPhone: phoneExists.phone.number
+      },
+      performedBy: req.user._id,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      severity: 'critical',
+      metadata: {
+        action: 'delivery_registration_with_mismatched_credentials',
+        blocked: true
+      }
+    });
+    
     return next(new AppError('Email and phone number belong to different accounts. Please use matching credentials.', 400));
+  }
+
+  // ADDITIONAL CHECK: If only phone exists (with different email), require exact match
+  if (phoneExists && !exactMatch) {
+    logger.error(`[REGISTER] SECURITY ALERT - Phone number already registered to another account!`);
+    logger.error(`  - Attempted phone: ${normalizedPhone}`);
+    logger.error(`  - Phone belongs to: ${phoneExists._id} (${phoneExists.email.address})`);
+    logger.error(`  - Attempted email: ${email} (does not match existing account)`);
+    
+    await AuditLog.create({
+      action: 'SECURITY_VIOLATION_ATTEMPT',
+      entityType: 'User',
+      entityId: phoneExists._id,
+      changes: {
+        attemptedEmail: email,
+        existingEmail: phoneExists.email.address,
+        attemptedPhone: normalizedPhone,
+        reason: 'phone_already_registered'
+      },
+      performedBy: req.user._id,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      severity: 'critical',
+      metadata: {
+        action: 'delivery_registration_with_existing_phone',
+        blocked: true
+      }
+    });
+    
+    return next(new AppError(`This phone number is already registered. To add delivery role to existing account, use the email: ${phoneExists.email.address}`, 400));
+  }
+
+  // ADDITIONAL CHECK: If only email exists (with different phone), require exact match
+  if (emailExists && !exactMatch) {
+    logger.error(`[REGISTER] SECURITY ALERT - Email already registered to another account!`);
+    logger.error(`  - Attempted email: ${email}`);
+    logger.error(`  - Email belongs to: ${emailExists._id} (${emailExists.phone.number})`);
+    logger.error(`  - Attempted phone: ${normalizedPhone} (does not match existing account)`);
+    
+    await AuditLog.create({
+      action: 'SECURITY_VIOLATION_ATTEMPT',
+      entityType: 'User',
+      entityId: emailExists._id,
+      changes: {
+        attemptedPhone: normalizedPhone,
+        existingPhone: emailExists.phone.number,
+        email: email,
+        reason: 'email_already_registered'
+      },
+      performedBy: req.user._id,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      severity: 'critical',
+      metadata: {
+        action: 'delivery_registration_with_existing_email',
+        blocked: true
+      }
+    });
+    
+    return next(new AppError(`This email is already registered. To add delivery role to existing account, use the phone: ${emailExists.phone.number}`, 400));
   }
 
   let deliveryPartner;
