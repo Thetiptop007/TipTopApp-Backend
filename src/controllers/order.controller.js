@@ -893,7 +893,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
         vehicleNumber: order.deliveryPartner.vehicleNumber
       } : null,
       date: order.createdAt.toISOString().split('T')[0],
-      time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      time: order.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }),
       address: {
         street: order.deliveryAddress?.street || '',
         city: order.deliveryAddress?.city || '',
@@ -936,7 +936,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       total: order.pricing?.finalAmount || 0,
       status: statusMap[order.status] || order.status,
       date: order.createdAt.toISOString().split('T')[0],
-      time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      time: order.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }),
       address: {
         street: order.deliveryAddress?.street || '',
         city: order.deliveryAddress?.city || '',
@@ -1026,7 +1026,7 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
     total: order.pricing?.finalAmount || 0,
     status: statusMap[order.status] || order.status,
     date: order.createdAt.toISOString().split('T')[0],
-    time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    time: order.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
   }));
 
   // Add no-cache headers to prevent browser caching
@@ -1108,7 +1108,7 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
     },
     status: statusMap[order.status] || order.status,
     date: order.createdAt.toISOString().split('T')[0],
-    time: order.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+    time: order.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }),
     address: {
       street: order.deliveryAddress?.street || '',
       city: order.deliveryAddress?.city || '',
