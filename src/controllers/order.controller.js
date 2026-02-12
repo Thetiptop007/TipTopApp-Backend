@@ -794,19 +794,24 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   });
 
   // Verify order was saved with a valid order number
+  logger.info(`📝 Order created with ID: ${order._id}, OrderNumber: ${order.orderNumber}`);
+  
   if (!order._id || !order.orderNumber) {
     logger.error('❌ Order creation failed - missing _id or orderNumber');
     return next(new AppError('Failed to create order - please try again', 500));
   }
 
   // Validate order number format
-  const orderNumberPattern = /^ORD-\\d{6,}$/;
-  if (!orderNumberPattern.test(order.orderNumber)) {
+  const orderNumberPattern = /^ORD-\d{6,}$/;
+  const isValidFormat = orderNumberPattern.test(order.orderNumber);
+  logger.info(`🔍 Validating order number: ${order.orderNumber}, Pattern match: ${isValidFormat}`);
+  
+  if (!isValidFormat) {
     logger.error(`❌ Invalid order number format: ${order.orderNumber}`);
     return next(new AppError('Order created but validation failed - please contact support', 500));
   }
 
-  logger.info(`✅ Guest order created: ${order.orderNumber} for ${customer.name} (${customer.phone})`);
+  logger.info(`✅ Guest order created successfully: ${order.orderNumber} for ${customer.name} (${customer.phone})`);
 
   // Emit socket event for real-time admin panel updates
   try {
