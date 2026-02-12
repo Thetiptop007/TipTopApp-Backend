@@ -793,10 +793,28 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     },
   });
 
+  // Verify order was saved with a valid order number
+  if (!order._id || !order.orderNumber) {
+    logger.error('❌ Order creation failed - missing _id or orderNumber');
+    return next(new AppError('Failed to create order - please try again', 500));
+  }
+
+  // Validate order number format
+  const orderNumberPattern = /^ORD-\\d{6,}$/;
+  if (!orderNumberPattern.test(order.orderNumber)) {
+    logger.error(`❌ Invalid order number format: ${order.orderNumber}`);
+    return next(new AppError('Order created but validation failed - please contact support', 500));
+  }
+
   logger.info(`✅ Guest order created: ${order.orderNumber} for ${customer.name} (${customer.phone})`);
 
   // Emit socket event for real-time admin panel updates
-  emitNewOrder(order);
+  try {
+    emitNewOrder(order);
+  } catch (err) {
+    logger.error('⚠️ Failed to emit socket event:', err.message);
+    // Don't fail the request if socket emit fails
+  }
 
   // Populate order for response
   await order.populate('items.menuItemId');
