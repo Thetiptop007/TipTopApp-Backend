@@ -616,6 +616,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     deliveryAddress,
     paymentMethod = 'COD',
     specialInstructions,
+    fcmToken,
   } = req.body;
 
   // Validation handled by validator middleware, but double-check critical fields
@@ -685,6 +686,9 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     });
     logger.info(`✨ Created new guest customer: ${customer.name} (${customer.phone})`);
   }
+
+  // Note: For guest orders, we don't store FCM tokens in DB
+  // Token is only used for this order's confirmation notification
 
   // Calculate pricing
   let itemsTotal = 0;
@@ -819,6 +823,28 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   } catch (err) {
     logger.error('⚠️ Failed to emit socket event:', err.message);
     // Don't fail the request if socket emit fails
+  }
+
+  // Send confirmation notification to the device that placed this order
+  // For guest orders: only send to the FCM token from THIS request (not stored tokens)
+  try {
+    if (fcmToken) {
+      const customerName = customer.name || 'Guest';
+      await notificationService.sendCustomNotification(
+        fcmToken,
+        `Hey ${customerName}! 🎉`,
+        `Your order #${order.orderNumber} is confirmed! We're preparing your delicious meal.`,
+        {
+          type: 'ORDER_CONFIRMED',
+          orderId: order._id.toString(),
+          orderNumber: order.orderNumber,
+          icon: 'https://thetiptop.ca/favicon.ico',
+          badge: 'https://thetiptop.ca/favicon.ico'
+        }
+      );
+    }
+  } catch (err) {
+    logger.error('Failed to send guest confirmation notification:', err.message);
   }
 
   // Populate order for response

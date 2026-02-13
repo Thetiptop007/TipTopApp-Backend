@@ -52,24 +52,16 @@ class NotificationService {
    * @param {string} deviceToken - FCM device token of the recipient
    */
   async sendOrderNotification(order, deviceToken) {
-    logger.info(`\n🔔 [FCM Service] sendOrderNotification called`);
-    logger.info(`📱 [FCM] Initialized: ${this.initialized}`);
-    logger.info(`📱 [FCM] Device Token: ${deviceToken ? deviceToken.substring(0, 30) + '...' : 'null'}`);
-    
     if (!this.initialized) {
-      logger.error('❌ [FCM] Firebase not initialized. Cannot send order notification.');
-      logger.error('❌ [FCM] Check FIREBASE_SERVICE_ACCOUNT or FIREBASE_PROJECT_ID in .env');
+      logger.error('Firebase not initialized. Cannot send notification.');
       return false;
     }
 
     if (!deviceToken) {
-      logger.error('❌ [FCM] No device token provided. Cannot send notification.');
       return false;
     }
 
     try {
-      logger.info(`📱 [FCM] Preparing notification message...`);
-      
       const totalAmount = order.pricing?.finalAmount || order.totalAmount || 0;
       
       const message = {
@@ -246,7 +238,11 @@ class NotificationService {
 
     try {
       const message = {
-        notification: { title, body },
+        notification: { 
+          title, 
+          body,
+          ...(data.icon && { imageUrl: data.icon })
+        },
         data: {
           ...data,
           timestamp: new Date().toISOString()

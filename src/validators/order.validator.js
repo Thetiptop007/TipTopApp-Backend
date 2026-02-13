@@ -396,6 +396,10 @@ exports.createGuestOrderSchema = Joi.object({
       'any.only': 'Payment method must be COD or ONLINE',
     }),
 
+  fcmToken: Joi.string().trim().allow('').optional().messages({
+    'string.base': 'FCM token must be a string',
+  }),
+
   specialInstructions: Joi.string().trim().max(500).allow('').optional().messages({
     'string.max': 'Special instructions cannot exceed 500 characters',
   }),
