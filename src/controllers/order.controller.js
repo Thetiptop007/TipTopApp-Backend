@@ -656,39 +656,27 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   // Get settings for tax and delivery charges
   const settings = await Settings.getSettings();
 
-  // Create or find customer user (for guest orders, we create a basic user record)
-  let customerUser = await User.findOne({ 'phone.number': customer.phone });
+  // For authenticated orders, find the user. For guest orders, don't create user accounts.
+  let customerUser = null;
+  let customerId = null;
 
-  if (!customerUser) {
-    const nameParts = customer.name.trim().split(' ');
-    const firstName = nameParts[0] || 'Customer';
-    const lastName = nameParts.slice(1).join(' ') || 'Guest';
-    
-    const email = customer.email || `${customer.phone}@guest.thetiptop.com`;
-    const randomPassword = Math.random().toString(36).slice(-10) + Math.random().toString(36).slice(-10);
-    
-    customerUser = await User.create({
-      name: {
-        first: firstName,
-        last: lastName,
-      },
-      phone: {
-        number: customer.phone,
-        isVerified: false,
-      },
-      email: {
-        address: email,
-        isVerified: customer.email ? false : true, // Auto-verify temp emails
-      },
-      password: randomPassword,
-      role: 'customer',
-      isActive: true,
+  // Only try to find existing user if they're authenticated (have real email)
+  if (customer.email && !customer.email.includes('@guest.thetiptop.com')) {
+    customerUser = await User.findOne({ 
+      $or: [
+        { 'email.address': customer.email },
+        { 'phone.number': customer.phone }
+      ]
     });
-    logger.info(`✨ Created new guest customer: ${customer.name} (${customer.phone})`);
+    
+    if (customerUser) {
+      customerId = customerUser._id;
+      logger.info(`✅ Found existing customer: ${customer.name} (${customer.phone})`);
+    }
   }
 
-  // Note: For guest orders, we don't store FCM tokens in DB
-  // Token is only used for this order's confirmation notification
+  // Note: For guest orders, we don't create user accounts
+  // Customer info is stored directly in the order document
 
   // Calculate pricing
   let itemsTotal = 0;
@@ -755,7 +743,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   // Create order with proper schema structure
   const order = await Order.create({
     customer: {
-      id: customerUser._id,
+      id: customerId, // Will be null for guest orders
       name: customer.name,
       phone: customer.phone,
       email: customer.email || '',
@@ -782,7 +770,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
       {
         status: 'PENDING',
         timestamp: new Date(),
-        notes: 'Guest order placed from website',
+        notes: customerId ? 'Order placed by customer' : 'Guest order placed from website',
       },
     ],
     paymentMethod: paymentMethod,
@@ -791,7 +779,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     contactlessDelivery: false,
     metadata: {
       orderSource: 'web',
-      deviceType: 'web-guest',
+      deviceType: customerId ? 'web-customer' : 'web-guest',
       userAgent: req.headers['user-agent'] || '',
       ipAddress: req.ip || '',
     },
@@ -815,7 +803,20 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     return next(new AppError('Order created but validation failed - please contact support', 500));
   }
 
-  logger.info(`✅ Guest order created successfully: ${order.orderNumber} for ${customer.name} (${customer.phone})`);
+  logger.info(`✅ ${customerId ? 'Customer' : 'Guest'} order created successfully: ${order.orderNumber} for ${customer.name} (${customer.phone})`);
+
+  // Update customer stats if this is a registered customer
+  if (customerUser) {
+    try {
+      customerUser.customerData.totalOrders += 1;
+      customerUser.customerData.totalSpent += finalAmount;
+      await customerUser.save({ validateBeforeSave: false });
+      logger.info(`📊 Updated customer stats: ${customerUser.email.address} - Total Orders: ${customerUser.customerData.totalOrders}, Total Spent: ₹${customerUser.customerData.totalSpent}`);
+    } catch (err) {
+      logger.error('Failed to update customer stats:', err.message);
+      // Don't fail the order if stats update fails
+    }
+  }
 
   // Emit socket event for real-time admin panel updates
   try {
@@ -825,10 +826,12 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     // Don't fail the request if socket emit fails
   }
 
-  // Send confirmation notification to the device that placed this order
-  // For guest orders: only send to the FCM token from THIS request (not stored tokens)
+  // Send confirmation notification
+  // For guest orders: only send to the FCM token from THIS request (one-time notification)
+  // For authenticated customers: notification will be sent via their stored FCM tokens
   try {
-    if (fcmToken) {
+    if (fcmToken && !customerId) {
+      // Guest order - send one-time notification to provided token
       const customerName = customer.name || 'Guest';
       await notificationService.sendCustomNotification(
         fcmToken,
@@ -842,9 +845,13 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
           badge: 'https://thetiptop.ca/favicon.ico'
         }
       );
+      logger.info(`📱 Sent one-time notification to guest for order ${order.orderNumber}`);
+    } else if (customerId) {
+      // Authenticated customer - notification handled by user's stored FCM tokens
+      logger.info(`📱 Notification for authenticated customer will be sent via stored tokens`);
     }
   } catch (err) {
-    logger.error('Failed to send guest confirmation notification:', err.message);
+    logger.error('Failed to send order confirmation notification:', err.message);
   }
 
   // Populate order for response
