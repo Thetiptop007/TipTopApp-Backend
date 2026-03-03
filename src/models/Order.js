@@ -140,6 +140,18 @@ const orderSchema = new mongoose.Schema(
       },
     },
 
+    // Applied Offer (New - for offer system)
+    appliedOffer: {
+      offerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Offer',
+      },
+      offerName: String,
+      discountType: String, // 'fixed' or 'percentage'
+      discountValue: Number,
+      discountAmount: Number, // Calculated discount applied
+    },
+
     // Delivery Information
     deliveryAddress: {
       street: String,
