@@ -6,6 +6,7 @@ class RedisCache {
     this.client = null;
     this.isConnected = false;
     this.isConnecting = false;
+    this.hasLoggedConnectionError = false;
   }
 
   /**
@@ -28,7 +29,10 @@ class RedisCache {
       });
 
       this.client.on('error', (err) => {
-        logger.warn('Redis Client Error (non-fatal):', err.message);
+        if (!this.hasLoggedConnectionError) {
+          logger.warn(`Redis Client Error (non-fatal): ${err.message}`);
+          this.hasLoggedConnectionError = true;
+        }
         this.isConnected = false;
         // Prevent error from bubbling up and crashing the app
         if (this.client) {
@@ -44,6 +48,7 @@ class RedisCache {
       this.client.on('ready', () => {
         logger.info('Redis: Connected and ready');
         this.isConnected = true;
+        this.hasLoggedConnectionError = false;
       });
 
       this.client.on('reconnecting', () => {
@@ -61,7 +66,7 @@ class RedisCache {
       
       this.isConnecting = false;
     } catch (error) {
-      logger.warn('Redis connection failed - running without cache:', error.message);
+      logger.warn(`Redis connection failed - running without cache: ${error.message}`);
       this.isConnected = false;
       this.isConnecting = false;
       if (this.client) {

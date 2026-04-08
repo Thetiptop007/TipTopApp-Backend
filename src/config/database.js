@@ -52,8 +52,6 @@ const buildMongoCandidates = () => {
  * Connect to MongoDB, falling back to local development URIs when needed.
  */
 const connectDB = async () => {
-  console.log("hellow")
-  console.log("testing.................", process.env.MONGODB_URI);
   const candidates = buildMongoCandidates();
   let lastError;
 
