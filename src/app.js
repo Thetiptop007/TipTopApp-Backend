@@ -46,7 +46,7 @@ const corsOptions = {
   origin: function (origin, callback) {
     // In production, allow specific origins from CLIENT_URL
     const whitelist = process.env.CLIENT_URL
-      ? process.env.CLIENT_URL.split(',')
+      ? process.env.CLIENT_URL.split(',').map(url => url.trim()).filter(url => url)
       : [
           'http://localhost:5173',
           'http://localhost:5174',
@@ -60,7 +60,11 @@ const corsOptions = {
     if (!origin || whitelist.indexOf(origin) !== -1 || whitelist.some(allowed => origin && origin.includes('vercel.app'))) {
       callback(null, true);
     } else {
-      logger.warn(`CORS blocked origin: ${origin}`);
+      if (process.env.NODE_ENV === 'development') {
+        logger.info(`✅ [CORS] Allowed origin: ${origin}`);
+      } else {
+        logger.warn(`⚠️  [CORS] Unknown origin (allowed for debugging): ${origin}`);
+      }
       callback(null, true); // Temporarily allow all origins for debugging
     }
   },
@@ -91,11 +95,20 @@ app.use(xss());
 // Compression
 app.use(compression());
 
-// HTTP request logger
+// HTTP request logger - skip health checks in production
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 } else {
-  app.use(morgan('combined', { stream: logger.stream }));
+  // Only log errors (4xx, 5xx) in production to reduce disk I/O
+  app.use(
+    morgan(':remote-addr :method :url :status :response-time ms', {
+      stream: logger.stream,
+      skip: (req, res) => {
+        // Skip health checks and success responses
+        return (req.path === '/health' || req.path === '/api/v1/test') || (res.statusCode < 400);
+      },
+    })
+  );
 }
 
 // Serve static files (for APK downloads)
@@ -117,6 +130,24 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     environment: process.env.NODE_ENV,
+  });
+});
+
+// Root route for platform probes (Render often checks "/")
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'TipTop backend is running',
+    health: '/health',
+    apiBase: '/api/v1',
+  });
+});
+
+app.get('/api/v1', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'TipTop API base endpoint',
+    test: '/api/v1/test',
   });
 });
 

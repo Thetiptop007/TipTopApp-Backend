@@ -1,15 +1,14 @@
 const winston = require('winston');
 
-// Define log format
-const logFormat = winston.format.combine(
+// Optimized log format for production (minimal but traceable)
+const productionFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.errors({ stack: true }),
-  winston.format.splat(),
   winston.format.json()
 );
 
-// Console format for development
-const consoleFormat = winston.format.combine(
+// Development format with colors
+const developmentFormat = winston.format.combine(
   winston.format.colorize(),
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.printf(({ timestamp, level, message, stack }) => {
@@ -22,43 +21,67 @@ const consoleFormat = winston.format.combine(
 
 // Create logger instance
 const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: logFormat,
+  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+  format: process.env.NODE_ENV === 'production' ? productionFormat : developmentFormat,
   transports: [
-    // Error logs
+    // Only log errors to file in production (to reduce disk I/O)
     new winston.transports.File({
       filename: 'logs/error.log',
       level: 'error',
       maxsize: 5242880, // 5MB
-      maxFiles: 5,
-    }),
-    // Combined logs
-    new winston.transports.File({
-      filename: 'logs/combined.log',
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
+      maxFiles: 3,
+      format: productionFormat,
     }),
   ],
   exceptionHandlers: [
-    new winston.transports.File({ filename: 'logs/exceptions.log' }),
+    new winston.transports.File({
+      filename: 'logs/exceptions.log',
+      maxsize: 5242880,
+      maxFiles: 3,
+    }),
   ],
   rejectionHandlers: [
-    new winston.transports.File({ filename: 'logs/rejections.log' }),
+    new winston.transports.File({
+      filename: 'logs/rejections.log',
+      maxsize: 5242880,
+      maxFiles: 3,
+    }),
   ],
 });
 
-// Always add console transport for cloud platform logs (Render, Heroku, etc.)
+// Always add console for cloud platforms (Render reads from stdout/stderr)
 logger.add(
   new winston.transports.Console({
-    format: process.env.NODE_ENV === 'production' ? logFormat : consoleFormat,
+    format: process.env.NODE_ENV === 'production' ? productionFormat : developmentFormat,
   })
 );
 
-// Stream for Morgan HTTP logger
+// Stream for Morgan HTTP logger - only log errors and slow requests
 logger.stream = {
   write: (message) => {
-    logger.info(message.trim());
+    // Only log if it's an error status code or warning
+    if (message.includes(' 4') || message.includes(' 5') || message.includes('WARN')) {
+      logger.info(message.trim());
+    }
   },
 };
+
+// Monitor memory usage in production
+if (process.env.NODE_ENV === 'production') {
+  setInterval(() => {
+    const memUsage = process.memoryUsage();
+    const heapPercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
+
+    // Log warning if heap usage exceeds 80%
+    if (heapPercent > 80) {
+      logger.warn(`⚠️ HIGH MEMORY USAGE: ${heapPercent.toFixed(2)}% (${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB / ${(memUsage.heapTotal / 1024 / 1024).toFixed(2)}MB)`);
+    }
+
+    // Log critical if heap usage exceeds 90%
+    if (heapPercent > 90) {
+      logger.error(`🔴 CRITICAL MEMORY USAGE: ${heapPercent.toFixed(2)}% - Server may crash soon`);
+    }
+  }, 30000); // Check every 30 seconds
+}
 
 module.exports = logger;

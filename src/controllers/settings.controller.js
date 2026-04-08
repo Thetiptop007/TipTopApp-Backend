@@ -5,13 +5,74 @@ const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
 
 /**
+ * @desc    Initialize settings (create if not exists)
+ * @route   GET /api/v1/settings/init
+ * @access  Public
+ */
+exports.initializeSettings = catchAsync(async (req, res, next) => {
+  try {
+    let settings = await Settings.findOne({ singleton: true });
+    
+    if (!settings) {
+      logger.info('Creating default settings document...');
+      settings = await Settings.create({ 
+        singleton: true,
+        siteName: 'ThéTipTop',
+        contactEmail: 'contact@thetiptop.com',
+        contactPhone: '+33 1 23 45 67 89',
+        businessAddress: '123 Restaurant Street, Paris, France',
+        website: 'www.thetiptop.com',
+        shopStatus: {
+          isOpen: true,
+          lastUpdatedBy: 'System',
+          lastUpdatedAt: new Date(),
+          closureReason: ''
+        }
+      });
+      logger.info('✅ Settings initialized successfully');
+    }
+
+    res.status(200).json({
+      success: true,
+      message: settings ? 'Settings loaded' : 'Settings initialized',
+      data: {
+        settings,
+      },
+    });
+  } catch (error) {
+    logger.error('Error in initializeSettings:', error.message);
+    return next(new AppError('Failed to initialize settings: ' + error.message, 500));
+  }
+});
+
+/**
  * @desc    Get settings
  * @route   GET /api/v1/settings
  * @access  Public (or Admin if you want to restrict)
  */
 exports.getSettings = catchAsync(async (req, res, next) => {
   try {
-    const settings = await Settings.getSettings();
+    let settings = await Settings.findOne({ singleton: true });
+    
+    // If no settings exist, create default ones
+    if (!settings) {
+      logger.warn('⚠️ No settings found, creating default settings...');
+      settings = await Settings.create({
+        singleton: true,
+        siteName: 'ThéTipTop',
+        contactEmail: 'contact@thetiptop.com',
+        contactPhone: '+33 1 23 45 67 89',
+        businessAddress: '123 Restaurant Street, Paris, France',
+        website: 'www.thetiptop.com',
+        shopStatus: {
+          isOpen: true,
+          lastUpdatedBy: 'System',
+          lastUpdatedAt: new Date(),
+          closureReason: ''
+        }
+      });
+      logger.info('✅ Default settings created');
+    }
 
     res.status(200).json({
       success: true,
@@ -20,8 +81,8 @@ exports.getSettings = catchAsync(async (req, res, next) => {
       },
     });
   } catch (error) {
-    logger.error('Error in getSettings:', error);
-    return next(new AppError('Failed to fetch settings', 500));
+    logger.error('Error in getSettings:', error.message);
+    return next(new AppError('Failed to fetch settings: ' + error.message, 500));
   }
 });
 
@@ -130,12 +191,31 @@ exports.toggleShopStatus = catchAsync(async (req, res, next) => {
  * @access  Public
  */
 exports.getShopStatus = catchAsync(async (req, res, next) => {
-  const settings = await Settings.getSettings();
+  try {
+    let settings = await Settings.findOne({ singleton: true });
+    
+    // If no settings exist, create default ones
+    if (!settings) {
+      logger.warn('⚠️ No settings found, creating default settings for shop status...');
+      settings = await Settings.create({
+        singleton: true,
+        shopStatus: {
+          isOpen: true,
+          lastUpdatedBy: 'System',
+          lastUpdatedAt: new Date(),
+          closureReason: ''
+        }
+      });
+    }
 
-  res.status(200).json({
-    success: true,
-    data: {
-      shopStatus: settings.shopStatus,
-    },
-  });
+    res.status(200).json({
+      success: true,
+      data: {
+        shopStatus: settings.shopStatus,
+      },
+    });
+  } catch (error) {
+    logger.error('Error in getShopStatus:', error.message);
+    return next(new AppError('Failed to fetch shop status: ' + error.message, 500));
+  }
 });

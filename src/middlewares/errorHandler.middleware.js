@@ -3,21 +3,39 @@ const logger = require('../utils/logger');
 
 /**
  * Global error handler middleware
- * Catches all errors and sends critical ones to developer
+ * Only logs critical errors to avoid log bloat
  */
 const errorHandler = (err, req, res, next) => {
-  // Log the error
-  logger.error('Error caught by global handler:', {
-    message: err.message,
-    stack: err.stack,
-    url: req.originalUrl,
-    method: req.method,
-  });
+  const statusCode = err.statusCode || 500;
+  const isCritical = statusCode >= 500;
 
-  // Check if error is critical and send notification
-  if (isCriticalError(err)) {
-    logger.warn('🚨 Critical error detected, notifying developer...');
-    
+  // Only log critical errors (5xx) in production
+  if (process.env.NODE_ENV === 'production') {
+    if (isCritical) {
+      logger.error('🔴 CRITICAL ERROR (5xx)', {
+        message: err.message,
+        method: req.method,
+        url: req.originalUrl,
+        statusCode,
+        name: err.name,
+      });
+    }
+    // Don't log 4xx errors in production (too noisy)
+  } else {
+    // Log all errors in development
+    logger.error('Error caught by global handler:', {
+      message: err.message,
+      stack: err.stack,
+      url: req.originalUrl,
+      method: req.method,
+      statusCode,
+    });
+  }
+
+  // Check if error is critical and send notification (only for 500+ errors)
+  if (isCritical && isCriticalError(err)) {
+    logger.warn('⚠️ Sending critical error notification to developer...');
+
     // Send notification asynchronously (don't block response)
     notifyCriticalError(err, {
       req: {
@@ -27,44 +45,44 @@ const errorHandler = (err, req, res, next) => {
         'user-agent': req.get('user-agent'),
       },
       user: req.user || null,
-      additionalInfo: {
-        body: req.body,
-        params: req.params,
-        query: req.query,
-      },
+      statusCode,
     }).catch((notificationError) => {
-      logger.error('Failed to send error notification:', notificationError);
+      logger.error('Failed to send error notification:', notificationError.message);
     });
   }
 
   // Send error response to client
-  const statusCode = err.statusCode || 500;
   const message = err.message || 'Internal Server Error';
 
   res.status(statusCode).json({
     success: false,
     message,
-    error: process.env.NODE_ENV === 'development' ? {
-      stack: err.stack,
-      details: err,
-    } : undefined,
+    ...(process.env.NODE_ENV === 'development' && {
+      error: {
+        stack: err.stack,
+        details: err,
+      },
+    }),
   });
 };
 
 /**
- * Handle uncaught exceptions
+ * Handle uncaught exceptions globally
  */
 process.on('uncaughtException', (error) => {
-  logger.error('💥 UNCAUGHT EXCEPTION! Shutting down...', error);
-  
+  logger.error('💥 UNCAUGHT EXCEPTION - Application must restart', {
+    message: error.message,
+    name: error.name,
+    stack: error.stack,
+  });
+
   // Notify developer
   notifyCriticalError(error, {
     type: 'uncaughtException',
-    additionalInfo: {
-      message: 'Application encountered an uncaught exception and may need to restart',
-    },
+    message: 'Application crashed due to uncaught exception',
   }).finally(() => {
-    process.exit(1);
+    logger.error('Exiting process in 5 seconds...');
+    setTimeout(() => process.exit(1), 5000);
   });
 });
 
@@ -72,19 +90,21 @@ process.on('uncaughtException', (error) => {
  * Handle unhandled promise rejections
  */
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('💥 UNHANDLED REJECTION! Shutting down...', reason);
-  
+  logger.error('💥 UNHANDLED PROMISE REJECTION - Application must restart', {
+    message: reason instanceof Error ? reason.message : String(reason),
+    name: reason instanceof Error ? reason.name : 'Unknown',
+    stack: reason instanceof Error ? reason.stack : 'N/A',
+  });
+
   const error = reason instanceof Error ? reason : new Error(String(reason));
-  
+
   // Notify developer
   notifyCriticalError(error, {
     type: 'unhandledRejection',
-    additionalInfo: {
-      message: 'Application encountered an unhandled promise rejection',
-      promise: promise.toString(),
-    },
+    message: 'Application encountered unhandled promise rejection',
   }).finally(() => {
-    process.exit(1);
+    logger.error('Exiting process in 5 seconds...');
+    setTimeout(() => process.exit(1), 5000);
   });
 });
 

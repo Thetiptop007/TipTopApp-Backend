@@ -1,11 +1,11 @@
 /**
  * Redis Configuration
- * Handles Redis connection for caching and request deduplication
+ * Provides a Redis-backed cache when available and a safe in-memory fallback otherwise.
  */
 
+const redis = require('redis');
 const logger = require('../utils/logger');
 
-// Simple in-memory fallback if Redis is not available
 class InMemoryCache {
   constructor() {
     this.cache = new Map();
@@ -13,7 +13,6 @@ class InMemoryCache {
   }
 
   async get(key) {
-    // Check if key has expired
     if (this.expirations.has(key)) {
       const expiration = this.expirations.get(key);
       if (Date.now() > expiration) {
@@ -22,17 +21,18 @@ class InMemoryCache {
         return null;
       }
     }
+
     return this.cache.get(key) || null;
+  }
+
+  async set(key, value) {
+    this.cache.set(key, value);
+    return 'OK';
   }
 
   async setex(key, seconds, value) {
     this.cache.set(key, value);
     this.expirations.set(key, Date.now() + seconds * 1000);
-    return 'OK';
-  }
-
-  async set(key, value) {
-    this.cache.set(key, value);
     return 'OK';
   }
 
@@ -46,9 +46,24 @@ class InMemoryCache {
     return this.cache.has(key) ? 1 : 0;
   }
 
-  // Cleanup expired keys periodically
+  async delPattern(pattern) {
+    const regex = new RegExp(pattern.replace(/\*/g, '.*'));
+    let deleted = 0;
+
+    for (const key of this.cache.keys()) {
+      if (regex.test(key)) {
+        this.cache.delete(key);
+        this.expirations.delete(key);
+        deleted += 1;
+      }
+    }
+
+    return deleted;
+  }
+
   cleanup() {
     const now = Date.now();
+
     for (const [key, expiration] of this.expirations.entries()) {
       if (now > expiration) {
         this.cache.delete(key);
@@ -58,74 +73,164 @@ class InMemoryCache {
   }
 }
 
-let redisClient;
-
-// Try to use Redis, fallback to in-memory cache
-try {
-  const redis = require('redis');
-  
-  if (!redis || typeof redis.createClient !== 'function') {
-    throw new Error('Redis module not properly loaded');
+class RedisCache {
+  constructor() {
+    this.client = null;
+    this.isConnected = false;
+    this.isConnecting = false;
+    this.fallback = new InMemoryCache();
   }
-  
-  redisClient = redis.createClient({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    password: process.env.REDIS_PASSWORD || undefined,
-    retry_strategy: (options) => {
-      if (options.attempt > 3) {
-        logger.warn('Redis connection failed after 3 attempts, using in-memory cache');
-        return undefined; // Stop retrying
+
+  async connect() {
+    if (this.isConnected || this.isConnecting) {
+      return;
+    }
+
+    this.isConnecting = true;
+
+    try {
+      if (!process.env.REDIS_URL) {
+        throw new Error('REDIS_URL is not set');
       }
-      return Math.min(options.attempt * 100, 3000);
-    },
-  });
 
-  redisClient.on('error', (err) => {
-    logger.error('Redis Client Error:', err.message);
-  });
+      this.client = redis.createClient({
+        url: process.env.REDIS_URL,
+      });
 
-  redisClient.on('connect', () => {
-    logger.info('✅ Redis connected successfully');
-  });
+      this.client.on('error', (err) => {
+        logger.warn('Redis Client Error (non-fatal):', err.message);
+        this.isConnected = false;
+      });
 
-  // Promisify Redis methods
-  const { promisify } = require('util');
-  
-  if (typeof redisClient.get !== 'function') {
-    throw new Error('Redis client methods not available');
+      this.client.on('ready', () => {
+        this.isConnected = true;
+        logger.info('✅ Redis connected successfully');
+      });
+
+      await this.client.connect();
+      this.isConnected = true;
+    } catch (error) {
+      logger.warn('Redis not available, using in-memory cache');
+      logger.warn(error.message);
+      this.isConnected = false;
+
+      if (this.client) {
+        try {
+          await this.client.disconnect();
+        } catch (disconnectError) {
+          // Ignore disconnect errors.
+        }
+      }
+
+      this.client = null;
+    } finally {
+      this.isConnecting = false;
+    }
   }
-  
-  const getAsync = promisify(redisClient.get).bind(redisClient);
-  const setAsync = promisify(redisClient.set).bind(redisClient);
-  const setexAsync = promisify(redisClient.setex).bind(redisClient);
-  const delAsync = promisify(redisClient.del).bind(redisClient);
-  const existsAsync = promisify(redisClient.exists).bind(redisClient);
 
-  module.exports = {
-    get: getAsync,
-    set: setAsync,
-    setex: setexAsync,
-    del: delAsync,
-    exists: existsAsync,
-    client: redisClient,
-  };
-} catch (error) {
-  logger.warn('Redis not available, using in-memory cache');
-  logger.warn(error.message);
-  
-  // Use in-memory cache as fallback
-  const memoryCache = new InMemoryCache();
-  
-  // Cleanup expired keys every minute
-  setInterval(() => memoryCache.cleanup(), 60000);
-  
-  module.exports = {
-    get: memoryCache.get.bind(memoryCache),
-    set: memoryCache.set.bind(memoryCache),
-    setex: memoryCache.setex.bind(memoryCache),
-    del: memoryCache.del.bind(memoryCache),
-    exists: memoryCache.exists.bind(memoryCache),
-    client: memoryCache,
-  };
+  async get(key) {
+    if (!this.isConnected) {
+      return this.fallback.get(key);
+    }
+
+    try {
+      return await this.client.get(key);
+    } catch (error) {
+      logger.error(`Redis GET error for key ${key}:`, error);
+      return this.fallback.get(key);
+    }
+  }
+
+  async set(key, value) {
+    if (!this.isConnected) {
+      return this.fallback.set(key, value);
+    }
+
+    try {
+      return await this.client.set(key, value);
+    } catch (error) {
+      logger.error(`Redis SET error for key ${key}:`, error);
+      return this.fallback.set(key, value);
+    }
+  }
+
+  async setex(key, seconds, value) {
+    if (!this.isConnected) {
+      return this.fallback.setex(key, seconds, value);
+    }
+
+    try {
+      return await this.client.setEx(key, seconds, value);
+    } catch (error) {
+      logger.error(`Redis SETEX error for key ${key}:`, error);
+      return this.fallback.setex(key, seconds, value);
+    }
+  }
+
+  async del(key) {
+    if (!this.isConnected) {
+      return this.fallback.del(key);
+    }
+
+    try {
+      return await this.client.del(key);
+    } catch (error) {
+      logger.error(`Redis DEL error for key ${key}:`, error);
+      return this.fallback.del(key);
+    }
+  }
+
+  async exists(key) {
+    if (!this.isConnected) {
+      return this.fallback.exists(key);
+    }
+
+    try {
+      return await this.client.exists(key);
+    } catch (error) {
+      logger.error(`Redis EXISTS error for key ${key}:`, error);
+      return this.fallback.exists(key);
+    }
+  }
+
+  async delPattern(pattern) {
+    if (!this.isConnected) {
+      return this.fallback.delPattern(pattern);
+    }
+
+    try {
+      const keys = await this.client.keys(pattern);
+
+      if (keys.length > 0) {
+        return this.client.del(keys);
+      }
+
+      return 0;
+    } catch (error) {
+      logger.error(`Redis DEL pattern error for ${pattern}:`, error);
+      return this.fallback.delPattern(pattern);
+    }
+  }
+
+  async disconnect() {
+    if (this.client) {
+      await this.client.quit();
+      this.isConnected = false;
+      logger.info('Redis: Disconnected');
+    }
+  }
 }
+
+const cache = new RedisCache();
+
+if (process.env.REDIS_URL) {
+  setImmediate(() => {
+    cache.connect().catch(() => {
+      logger.warn('Redis connection failed - app will run without caching');
+    });
+  });
+} else {
+  logger.info('Redis disabled - Set REDIS_URL to enable caching');
+}
+
+module.exports = cache;

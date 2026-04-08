@@ -4,6 +4,8 @@ const User = require('../src/models/User');
 async function checkSecurityIssue() {
   try {
     // Connect to MongoDB
+    console.log('Connecting to MongoDB...');
+    console.log(process.env.MONGODB_URI);
     await mongoose.connect(process.env.DATABASE_URI || 'mongodb+srv://raj:RkhYZlM7hgDyKEo4@cluster0.j9hjo.mongodb.net/tiptop_prod?retryWrites=true&w=majority&appName=Cluster0');
     
     console.log('\n========== SECURITY ISSUE INVESTIGATION ==========\n');

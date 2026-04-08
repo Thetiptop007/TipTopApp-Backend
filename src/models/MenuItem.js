@@ -113,7 +113,6 @@ const menuItemSchema = new mongoose.Schema(
 
 // Indexes - Define all indexes here to avoid duplicates
 menuItemSchema.index({ name: 'text', description: 'text' });
-menuItemSchema.index({ slug: 1 }, { unique: true });
 menuItemSchema.index({ categories: 1 });
 menuItemSchema.index({ isAvailable: 1 });
 menuItemSchema.index({ isActive: 1 });

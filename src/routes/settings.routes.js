@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { getSettings, updateSettings, toggleShopStatus, getShopStatus } = require('../controllers/settings.controller');
+const { getSettings, initializeSettings, updateSettings, toggleShopStatus, getShopStatus } = require('../controllers/settings.controller');
 const authMiddleware = require('../middlewares/auth');
 
 // Public routes
+router.get('/init', initializeSettings);
 router.get('/', getSettings);
 router.get('/shop-status', getShopStatus);
 
