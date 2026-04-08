@@ -148,7 +148,7 @@ deliverySessionSchema.index({ sessionDate: -1 });
 deliverySessionSchema.index({ 'settlement.isSettled': 1 });
 
 // Calculate totals before saving
-deliverySessionSchema.pre('save', function (next) {
+deliverySessionSchema.pre('save', function () {
   // Calculate total expected
   this.totalExpected = this.orders.reduce((sum, order) => {
     if (order.status === 'collected') {
@@ -163,8 +163,6 @@ deliverySessionSchema.pre('save', function (next) {
   // Calculate total bonuses
   const totalBonuses = this.bonuses.reduce((sum, bonus) => sum + bonus.amount, 0);
   this.stats.earnings = this.tips + totalBonuses;
-
-  next();
 });
 
 // Static method to find active sessions

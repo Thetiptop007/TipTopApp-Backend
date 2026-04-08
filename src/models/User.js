@@ -314,7 +314,7 @@ userSchema.virtual('defaultAddress').get(function () {
 });
 
 // Sync primary role with roles array
-userSchema.pre('save', function (next) {
+userSchema.pre('save', function () {
   if (this.roles && this.roles.length > 0) {
     // Set primary role based on priority: admin > delivery > customer
     if (this.roles.includes('admin')) {
@@ -325,24 +325,18 @@ userSchema.pre('save', function (next) {
       this.role = 'customer';
     }
   }
-  next();
 });
 
 // Hash password before saving
-userSchema.pre('save', async function (next) {
+userSchema.pre('save', async function () {
   // Only hash if password is modified
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password')) return;
 
-  try {
-    this.password = await bcrypt.hash(this.password, 12);
-    next();
-  } catch (error) {
-    next(error);
-  }
+  this.password = await bcrypt.hash(this.password, 12);
 });
 
 // Ensure only one default address
-userSchema.pre('save', function (next) {
+userSchema.pre('save', function () {
   if (this.addresses && this.addresses.length > 0) {
     const defaultAddresses = this.addresses.filter((addr) => addr.isDefault);
     if (defaultAddresses.length > 1) {
@@ -354,7 +348,6 @@ userSchema.pre('save', function (next) {
       });
     }
   }
-  next();
 });
 
 // Virtual for full name

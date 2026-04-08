@@ -201,12 +201,12 @@ offerSchema.statics.getTeaserOffers = async function() {
 };
 
 // Pre-save hook to auto-update status based on dates
-offerSchema.pre('save', function(next) {
+offerSchema.pre('save', function() {
   const now = new Date();
   
   // Don't auto-update if manually set to deactivated or draft
   if (this.status === 'deactivated' || this.status === 'draft') {
-    return next();
+    return;
   }
 
   // Auto-update status based on dates
@@ -218,23 +218,20 @@ offerSchema.pre('save', function(next) {
     this.status = 'ended';
   }
 
-  next();
 });
 
 // Validation: End date must be after start date
-offerSchema.pre('save', function(next) {
+offerSchema.pre('save', function() {
   if (this.endDate <= this.startDate) {
-    return next(new Error('End date must be after start date'));
+    throw new Error('End date must be after start date');
   }
   
   // If teaser is enabled, validate teaser start date
   if (this.teaserEnabled && this.teaserStartDate) {
     if (this.teaserStartDate >= this.startDate) {
-      return next(new Error('Teaser start date must be before offer start date'));
+      throw new Error('Teaser start date must be before offer start date');
     }
   }
-  
-  next();
 });
 
 const Offer = mongoose.model('Offer', offerSchema);

@@ -63,11 +63,10 @@ categorySchema.statics.getAllWithCounts = async function() {
 };
 
 // Pre-save middleware to capitalize first letter
-categorySchema.pre('save', function(next) {
+categorySchema.pre('save', function() {
   if (this.isModified('name')) {
     this.name = this.name.charAt(0).toUpperCase() + this.name.slice(1);
   }
-  next();
 });
 
 const Category = mongoose.model('Category', categorySchema);

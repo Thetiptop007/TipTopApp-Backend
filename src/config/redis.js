@@ -108,6 +108,12 @@ class RedisCache {
           this.hasLoggedConnectionError = true;
         }
         this.isConnected = false;
+
+        if (this.client) {
+          const client = this.client;
+          this.client = null;
+          client.disconnect().catch(() => {});
+        }
       });
 
       this.client.on('ready', () => {

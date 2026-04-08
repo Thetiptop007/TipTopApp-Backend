@@ -120,14 +120,13 @@ menuItemSchema.index({ rating: -1 });
 menuItemSchema.index({ createdAt: -1 });
 
 // Generate slug before saving
-menuItemSchema.pre('save', function (next) {
+menuItemSchema.pre('save', function () {
   if (this.isModified('name')) {
     this.slug = this.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
   }
-  next();
 });
 
 // Static method to find by category

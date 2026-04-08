@@ -365,23 +365,21 @@ orderSchema.virtual('deliveryTime').get(function () {
 });
 
 // Generate order number before saving
-orderSchema.pre('save', async function (next) {
+orderSchema.pre('save', async function () {
   if (this.isNew && !this.orderNumber) {
     const count = await mongoose.model('Order').countDocuments();
     this.orderNumber = `ORD-${String(count + 1).padStart(6, '0')}`;
   }
-  next();
 });
 
 // Add status to history before saving
-orderSchema.pre('save', function (next) {
+orderSchema.pre('save', function () {
   if (this.isModified('status')) {
     this.statusHistory.push({
       status: this.status,
       timestamp: new Date(),
     });
   }
-  next();
 });
 
 // Static method to find pending orders
