@@ -14,10 +14,12 @@ const cache = require('./utils/cache');
 
 const app = express();
 
-// Initialize Redis cache (don't wait for connection)
-cache.connect().catch((err) => {
-  logger.warn('Redis connection failed, continuing without cache:', err.message);
-});
+// Initialize Redis cache only when configured.
+if (process.env.REDIS_URL) {
+  cache.connect().catch((err) => {
+    logger.warn('Redis connection failed, continuing without cache:', err.message);
+  });
+}
 
 // Trust proxy (important for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);

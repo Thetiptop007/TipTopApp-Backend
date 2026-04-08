@@ -17,12 +17,17 @@ class RedisCache {
     if (this.isConnecting || this.isConnected) {
       return;
     }
+
+    if (!process.env.REDIS_URL) {
+      logger.info('Redis disabled - REDIS_URL is not set');
+      return;
+    }
     
     this.isConnecting = true;
     try {
       
       this.client = redis.createClient({
-        url: process.env.REDIS_URL || 'redis://localhost:6379',
+        url: process.env.REDIS_URL,
         socket: {
           reconnectStrategy: false,
         },
