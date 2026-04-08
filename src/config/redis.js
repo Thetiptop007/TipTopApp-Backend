@@ -79,6 +79,7 @@ class RedisCache {
     this.isConnected = false;
     this.isConnecting = false;
     this.fallback = new InMemoryCache();
+    this.hasLoggedConnectionError = false;
   }
 
   async connect() {
@@ -90,28 +91,35 @@ class RedisCache {
 
     try {
       if (!process.env.REDIS_URL) {
-        throw new Error('REDIS_URL is not set');
+        logger.info('Redis disabled - REDIS_URL is not set');
+        return;
       }
 
       this.client = redis.createClient({
         url: process.env.REDIS_URL,
+        socket: {
+          reconnectStrategy: false,
+        },
       });
 
       this.client.on('error', (err) => {
-        logger.warn('Redis Client Error (non-fatal):', err.message);
+        if (!this.hasLoggedConnectionError) {
+          logger.warn(`Redis Client Error (non-fatal): ${err.message || 'unknown error'}`);
+          this.hasLoggedConnectionError = true;
+        }
         this.isConnected = false;
       });
 
       this.client.on('ready', () => {
         this.isConnected = true;
+        this.hasLoggedConnectionError = false;
         logger.info('✅ Redis connected successfully');
       });
 
       await this.client.connect();
       this.isConnected = true;
     } catch (error) {
-      logger.warn('Redis not available, using in-memory cache');
-      logger.warn(error.message);
+      logger.warn(`Redis not available, using in-memory cache: ${error.message || 'unknown error'}`);
       this.isConnected = false;
 
       if (this.client) {
@@ -225,8 +233,8 @@ const cache = new RedisCache();
 
 if (process.env.REDIS_URL) {
   setImmediate(() => {
-    cache.connect().catch(() => {
-      logger.warn('Redis connection failed - app will run without caching');
+    cache.connect().catch((error) => {
+      logger.warn(`Redis connection failed - app will run without caching: ${error?.message || 'unknown error'}`);
     });
   });
 } else {

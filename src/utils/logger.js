@@ -70,15 +70,20 @@ logger.stream = {
 if (process.env.NODE_ENV === 'production') {
   setInterval(() => {
     const memUsage = process.memoryUsage();
+    const heapUsedMb = memUsage.heapUsed / 1024 / 1024;
+    const heapTotalMb = memUsage.heapTotal / 1024 / 1024;
     const heapPercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
 
-    // Log warning if heap usage exceeds 80%
-    if (heapPercent > 80) {
-      logger.warn(`⚠️ HIGH MEMORY USAGE: ${heapPercent.toFixed(2)}% (${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB / ${(memUsage.heapTotal / 1024 / 1024).toFixed(2)}MB)`);
+    // On Node, heapTotal can be small and dynamic (especially after GC),
+    // so percentage alone causes noisy false positives.
+    const shouldWarn = heapPercent > 90 && heapUsedMb > 256;
+    const shouldCritical = heapPercent > 95 && heapUsedMb > 384;
+
+    if (shouldWarn) {
+      logger.warn(`⚠️ HIGH MEMORY USAGE: ${heapPercent.toFixed(2)}% (${heapUsedMb.toFixed(2)}MB / ${heapTotalMb.toFixed(2)}MB)`);
     }
 
-    // Log critical if heap usage exceeds 90%
-    if (heapPercent > 90) {
+    if (shouldCritical) {
       logger.error(`🔴 CRITICAL MEMORY USAGE: ${heapPercent.toFixed(2)}% - Server may crash soon`);
     }
   }, 30000); // Check every 30 seconds
