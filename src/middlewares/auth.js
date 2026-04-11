@@ -76,7 +76,7 @@ exports.protect = catchAsync(async (req, res, next) => {
 
   // Grant access to protected route
   req.user = user;
-  logger.info(`User authenticated: ${user.email} (${user.role})`);
+  logger.info(`User authenticated (${user.role})`);
   next();
 });
 
@@ -100,7 +100,7 @@ exports.restrictTo = (...roles) => {
 
     if (!hasRequiredRole) {
       logger.warn(
-        `Access denied for user ${req.user.email} (roles: ${userRoles.join(', ')}) - Required roles: ${roles.join(', ')}`
+        `Access denied (roles: ${userRoles.join(', ')}) - Required: ${roles.join(', ')}`
       );
       return next(
         new AppError('You do not have permission to perform this action.', 403)
@@ -108,7 +108,7 @@ exports.restrictTo = (...roles) => {
     }
 
     logger.info(
-      `Access granted for user ${req.user.email} (roles: ${userRoles.join(', ')})`
+      `Access granted (roles: ${userRoles.join(', ')})`
     );
     next();
   };
@@ -173,7 +173,7 @@ exports.checkOwnership = (resourceUserIdField = 'user') => {
 
     if (resourceUserId.toString() !== req.user._id.toString()) {
       logger.warn(
-        `Ownership check failed for user ${req.user.email} - Resource: ${resourceUserId}`
+        `Ownership check failed - Resource: ${resourceUserId}`
       );
       return next(
         new AppError('You do not have permission to access this resource.', 403)

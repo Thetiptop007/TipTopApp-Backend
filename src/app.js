@@ -7,6 +7,7 @@ const xss = require('xss-clean');
 const compression = require('compression');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 const logger = require('./utils/logger');
 const AppError = require('./utils/AppError');
 const { errorHandler } = require('./middlewares/errorHandler.middleware');
@@ -14,12 +15,11 @@ const cache = require('./utils/cache');
 
 const app = express();
 
-// Initialize Redis cache only when configured.
-if (process.env.REDIS_URL) {
-  cache.connect().catch((err) => {
-    logger.warn('Redis connection failed, continuing without cache:', err.message);
-  });
-}
+morgan.format('tiptop-dev', ':method :url :status :response-time[0]ms');
+morgan.format('tiptop-prod', ':remote-addr - - [:date[clf]] ":method :url HTTP/:http-version" :status');
+
+// In-memory cache is ready to use (no connection needed)
+logger.info('In-memory cache system initialized');
 
 // Trust proxy (important for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);
@@ -81,6 +81,27 @@ app.use(cors(corsOptions));
 // Handle preflight requests
 app.options('*', cors(corsOptions));
 
+const windowMinutes = Number(process.env.RATE_LIMIT_WINDOW || 15);
+const maxRequests = Number(process.env.RATE_LIMIT_MAX || 100);
+const apiLimiter = rateLimit({
+  windowMs: windowMinutes * 60 * 1000,
+  max: maxRequests,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 'fail',
+    message: 'Too many requests, please try again later.',
+  },
+});
+app.use('/api', apiLimiter);
+
+// HTTP request logger
+if (process.env.NODE_ENV === 'development') {
+  app.use(morgan('tiptop-dev'));
+} else {
+  app.use(morgan('tiptop-prod'));
+}
+
 // Body parser
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -96,22 +117,6 @@ app.use(xss());
 
 // Compression
 app.use(compression());
-
-// HTTP request logger - skip health checks in production
-if (process.env.NODE_ENV === 'development') {
-  app.use(morgan('dev'));
-} else {
-  // Only log errors (4xx, 5xx) in production to reduce disk I/O
-  app.use(
-    morgan(':remote-addr :method :url :status :response-time ms', {
-      stream: logger.stream,
-      skip: (req, res) => {
-        // Skip health checks and success responses
-        return (req.path === '/health' || req.path === '/api/v1/test') || (res.statusCode < 400);
-      },
-    })
-  );
-}
 
 // Serve static files (for APK downloads)
 app.use('/downloads', express.static(path.join(__dirname, '../public/downloads'), {

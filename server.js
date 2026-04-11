@@ -3,6 +3,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const logger = require('./src/utils/logger');
 const { connectDB } = require('./src/config/database');
+const cache = require('./src/utils/cache');
 
 const app = require('./src/app');
 
@@ -32,21 +33,43 @@ process.on('uncaughtException', (err) => {
   }, 5000);
 });
 
-// Monitor process memory usage
-if (process.env.NODE_ENV === 'production') {
-  setInterval(() => {
-    const memUsage = process.memoryUsage();
-    const used = (memUsage.heapUsed / 1024 / 1024).toFixed(2);
-    const total = (memUsage.heapTotal / 1024 / 1024).toFixed(2);
-    const external = (memUsage.external / 1024 / 1024).toFixed(2);
-    const uptime = process.uptime();
-    
-    // Only log memory warnings to reduce noise
-    if (used > total * 0.85) {
-      logger.warn(`⚠️ High memory usage: ${used}MB / ${total}MB (${((used / total) * 100).toFixed(1)}%)`);
+// Monitor process memory usage and cache performance
+const isProduction = process.env.NODE_ENV === 'production';
+const monitorInterval = isProduction ? 60000 : 30000; // 60s in prod, 30s in dev
+
+setInterval(() => {
+  const memUsage = process.memoryUsage();
+  const rssMb = memUsage.rss / 1024 / 1024;
+  const heapUsedMb = memUsage.heapUsed / 1024 / 1024;
+  const heapTotalMb = memUsage.heapTotal / 1024 / 1024;
+  const heapPercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
+  const externalMb = memUsage.external / 1024 / 1024;
+
+  // Get cache statistics
+  const cacheStats = cache.getStats?.() || {};
+
+  // Format cache info
+  const cacheInfo =
+    cacheStats.size > 0
+      ? `[Cache] Size: ${cacheStats.size} entries | Hits: ${cacheStats.hits} | Misses: ${cacheStats.misses} | Hit Rate: ${cacheStats.hitRate}`
+      : '[Cache] Empty';
+
+  // In development, always show stats
+  if (!isProduction) {
+    logger.info(
+      `📊 Memory: RSS ${rssMb.toFixed(1)}MB | Heap ${heapUsedMb.toFixed(1)}MB/${heapTotalMb.toFixed(1)}MB (${heapPercent.toFixed(1)}%) | External ${externalMb.toFixed(1)}MB`
+    );
+    logger.info(cacheInfo);
+  } else {
+    // In production, warn only when memory is genuinely high
+    if (rssMb > 512 && heapPercent > 92) {
+      logger.warn(
+        `⚠️ High memory usage: RSS ${rssMb.toFixed(2)}MB, Heap ${heapUsedMb.toFixed(2)}MB / ${heapTotalMb.toFixed(2)}MB (${heapPercent.toFixed(1)}%)`
+      );
+      logger.warn(cacheInfo);
     }
-  }, 60000); // Check every 60 seconds
-}
+  }
+}, monitorInterval);
 
 const startServer = async () => {
   try {
@@ -136,8 +159,12 @@ const gracefulShutdown = (signal) => {
           // Close database connections
           await mongoose.connection.close();
           logger.info('✅ MongoDB connection closed');
+
+          // Cleanup cache
+          await cache.disconnect();
+          logger.info('✅ Cache cleaned up');
         } catch (err) {
-          logger.error('⚠️ Error closing MongoDB:', err.message);
+          logger.error('⚠️ Error during shutdown:', err.message);
         }
 
         logger.info('═══════════════════════════════════════════');

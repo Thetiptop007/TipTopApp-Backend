@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const logger = require('../utils/logger');
 
 /**
  * Audit Log Schema
@@ -172,7 +173,7 @@ auditLogSchema.statics.log = async function ({
     });
     return log;
   } catch (error) {
-    console.error('Failed to create audit log:', error);
+    logger.error('[AuditLog] Failed to create audit log:', error);
     // Don't throw error - audit logging should not break application flow
     return null;
   }

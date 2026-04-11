@@ -18,8 +18,8 @@
     "delay": "250"
   },
   "scripts": {
-    "start": "node server.js",
     "dev": "cross-env NODE_ENV=development nodemon server.js",
+    "start": "cross-env NODE_ENV=production node server.js",
     "test": "jest --coverage --detectOpenHandles",
     "test:watch": "jest --watch",
     "test:unit": "jest tests/unit",
@@ -61,7 +61,6 @@
     "morgan": "^1.10.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
-    "redis": "^4.7.1",
     "resend": "^6.9.1",
     "socket.io": "^4.8.1",
     "winston": "^3.11.0",

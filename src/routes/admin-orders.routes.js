@@ -16,17 +16,6 @@ const router = express.Router();
 router.use(authMiddleware.protect);
 router.use(authMiddleware.restrictTo('admin'));
 
-// Add logging middleware to track all requests to this route
-router.use((req, res, next) => {
-  console.log('🟢 [ADMIN-ORDERS ROUTE] Request:', {
-    method: req.method,
-    path: req.path,
-    fullUrl: req.originalUrl,
-    timestamp: new Date().toISOString()
-  });
-  next();
-});
-
 // POS - Get minimal menu items for order creation (fast & light)
 router.get('/pos-menu', orderController.getPOSMenuItems);
 
@@ -37,10 +26,7 @@ router.post('/', orderController.createAdminOrder);
 router.get('/today', orderController.getTodayOrders);
 
 // Get all orders with pagination
-router.get('/all', (req, res, next) => {
-  console.log('🟢 [ADMIN-ORDERS /all] Route handler called');
-  orderController.getAllOrders(req, res, next);
-});
+router.get('/all', orderController.getAllOrders);
 
 // Get single order details
 router.get('/:id/details', orderController.getOrderDetails);

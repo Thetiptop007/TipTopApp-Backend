@@ -410,67 +410,52 @@ exports.getPublicMenuItem = catchAsync(async (req, res, next) => {
  * Public access
  */
 exports.getAllMenuItems = catchAsync(async (req, res, next) => {
-  console.log('🔍 Menu API called with query:', req.query);
-  
-  // First, get all matching items without pagination
-  const allFeatures = new APIFeatures(MenuItem.find(), req.query)
+  const requestedPage = parseInt(req.query.page, 10) || 1;
+  const requestedLimit = parseInt(req.query.limit, 10) || 10;
+  const safeLimit = Math.min(Math.max(requestedLimit, 1), 20);
+
+  req.query.page = String(requestedPage);
+  req.query.limit = String(safeLimit);
+
+  const features = new APIFeatures(MenuItem.find(), req.query)
     .filter()
     .search()
     .sort()
-    .limitFields();
+    .limitFields()
+    .paginate();
 
-  // Log the actual MongoDB query
-  console.log('🔎 MongoDB Query:', JSON.stringify(allFeatures.query.getQuery()));
-  console.log('🔎 MongoDB Options:', allFeatures.query.getOptions());
-
-  // Execute to get all matching items
-  const allItems = await allFeatures.query;
-  const totalResults = allItems.length;
-  
-  console.log(`📊 Menu items found: ${totalResults} items`);
-  if (totalResults > 0) {
-    console.log('📝 First item sample:', {
-      name: allItems[0].name,
-      isActive: allItems[0].isActive,
-      isAvailable: allItems[0].isAvailable,
-      categories: allItems[0].categories
-    });
-  } else {
-    // Check total count in database
-    const totalCount = await MenuItem.countDocuments();
-    console.log(`⚠️ Total items in database: ${totalCount}`);
-    if (totalCount > 0) {
-      const sampleItem = await MenuItem.findOne();
-      console.log('📝 Sample item from DB:', {
-        name: sampleItem?.name,
-        isActive: sampleItem?.isActive,
-        isAvailable: sampleItem?.isAvailable,
-        categories: sampleItem?.categories
-      });
-    }
-  }
-
-  // Now apply manual pagination
-  const page = parseInt(req.query.page, 10) || 1;
-  const limit = parseInt(req.query.limit, 10) || 100;
-  const startIndex = (page - 1) * limit;
-  const endIndex = page * limit;
-
-  const paginatedItems = allItems.slice(startIndex, endIndex);
-  
-  console.log(`✅ Returning ${paginatedItems.length} paginated items (page ${page}, limit ${limit})`);
+  const result = await features.execute(MenuItem);
 
   res.status(200).json({
     status: 'success',
-    results: paginatedItems.length,
-    pagination: {
-      currentPage: page,
-      totalPages: Math.ceil(totalResults / limit),
-      totalResults: totalResults,
-      limit: limit
-    },
+    results: result.data.length,
+    pagination: result.pagination,
     data: {
-      menuItems: paginatedItems,
+      menuItems: result.data,
+    },
+  });
+});
+
+/**
+ * Get all active menu items for shared caching and client-side filtering
+ * GET /api/v1/menu/all
+ * Public access
+ */
+exports.getAllMenuForCache = catchAsync(async (req, res, next) => {
+  const requestedLimit = parseInt(req.query.limit, 10) || 200;
+  const safeLimit = Math.min(Math.max(requestedLimit, 1), 300);
+
+  const menuItems = await MenuItem.find({ isActive: true, isAvailable: true })
+    .select('_id name slug description image categories priceVariants rating reviews isAvailable isActive preparationTime createdAt updatedAt')
+    .sort({ name: 1 })
+    .limit(safeLimit)
+    .lean();
+
+  res.status(200).json({
+    status: 'success',
+    results: menuItems.length,
+    data: {
+      menuItems,
     },
   });
 });

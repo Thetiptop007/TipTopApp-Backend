@@ -1,4 +1,5 @@
 const Joi = require('joi');
+const logger = require('../utils/logger');
 
 /**
  * Validation schema for creating a menu item
@@ -387,10 +388,11 @@ exports.menuQuerySchema = Joi.object({
  */
 exports.validate = (schema) => {
   return (req, res, next) => {
-    console.log('=== VALIDATION DEBUG ===');
-    console.log('Request Body:', JSON.stringify(req.body, null, 2));
-    console.log('Request Path:', req.path);
-    console.log('Request Method:', req.method);
+    logger.debug('[Validation] Request:', {
+      body: req.body,
+      path: req.path,
+      method: req.method
+    });
     
     const { error, value } = schema.validate(req.body, {
       abortEarly: false,
@@ -398,9 +400,6 @@ exports.validate = (schema) => {
     });
 
     if (error) {
-      console.log('=== VALIDATION FAILED ===');
-      console.log('Validation Error Details:', JSON.stringify(error.details, null, 2));
-      
       const errors = error.details.map((detail) => ({
         field: detail.path.join('.'),
         message: detail.message,
@@ -408,7 +407,10 @@ exports.validate = (schema) => {
         context: detail.context
       }));
 
-      console.log('Formatted Errors:', JSON.stringify(errors, null, 2));
+      logger.warn('[Validation] Validation failed', {
+        errors: errors,
+        errorDetails: error.details
+      });
 
       return res.status(400).json({
         status: 'fail',
@@ -417,13 +419,14 @@ exports.validate = (schema) => {
       });
     }
 
-    console.log('=== VALIDATION PASSED ===');
-    console.log('Validated Value:', JSON.stringify(value, null, 2));
+    logger.debug('[Validation] Validation passed', {
+      validatedValue: value
+    });
     
     req.body = value;
     next();
   };
-};
+};;
 
 /**
  * Middleware to validate query parameters

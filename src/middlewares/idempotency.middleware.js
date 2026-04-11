@@ -1,9 +1,10 @@
 /**
  * Idempotency Middleware
  * Prevents duplicate requests by checking idempotency keys
+ * Uses in-memory cache for request deduplication
  */
 
-const redis = require('../config/redis');
+const cache = require('../utils/cache');
 const logger = require('../utils/logger');
 const AppError = require('../utils/AppError');
 
@@ -25,19 +26,18 @@ const checkIdempotency = (ttl = 86400) => {
       const cacheKey = `idempotency:${idempotencyKey}`;
 
       // Check if this request was already processed
-      const cachedResponse = await redis.get(cacheKey);
+      const cachedResponse = await cache.get(cacheKey);
 
       if (cachedResponse) {
         logger.info(`🔁 Duplicate request detected with idempotency key: ${idempotencyKey}`);
         
         // Return the cached response
-        const parsedResponse = JSON.parse(cachedResponse);
-        return res.status(parsedResponse.statusCode || 200).json(parsedResponse.body);
+        return res.status(cachedResponse.statusCode || 200).json(cachedResponse.body);
       }
 
       // Check if request is currently being processed
       const processingKey = `${cacheKey}:processing`;
-      const isProcessing = await redis.get(processingKey);
+      const isProcessing = await cache.get(processingKey);
 
       if (isProcessing) {
         logger.warn(`⚠️ Request with idempotency key ${idempotencyKey} is already being processed`);
@@ -45,7 +45,7 @@ const checkIdempotency = (ttl = 86400) => {
       }
 
       // Mark as processing (with short TTL of 30 seconds)
-      await redis.setex(processingKey, 30, 'true');
+      await cache.set(processingKey, 'true', 30);
 
       // Store original response methods
       const originalJson = res.json;
@@ -61,12 +61,12 @@ const checkIdempotency = (ttl = 86400) => {
             timestamp: new Date().toISOString(),
           };
 
-          redis
-            .setex(cacheKey, ttl, JSON.stringify(responseToCache))
+          cache
+            .set(cacheKey, responseToCache, ttl)
             .catch((err) => logger.error('Failed to cache idempotent response:', err));
 
           // Remove processing flag
-          redis.del(processingKey).catch((err) => logger.error('Failed to remove processing flag:', err));
+          cache.del(processingKey).catch((err) => logger.error('Failed to remove processing flag:', err));
         }
 
         return originalJson.call(this, body);
@@ -81,12 +81,12 @@ const checkIdempotency = (ttl = 86400) => {
             timestamp: new Date().toISOString(),
           };
 
-          redis
-            .setex(cacheKey, ttl, JSON.stringify(responseToCache))
+          cache
+            .set(cacheKey, responseToCache, ttl)
             .catch((err) => logger.error('Failed to cache idempotent response:', err));
 
           // Remove processing flag
-          redis.del(processingKey).catch((err) => logger.error('Failed to remove processing flag:', err));
+          cache.del(processingKey).catch((err) => logger.error('Failed to remove processing flag:', err));
         }
 
         return originalSend.call(this, body);
@@ -95,7 +95,7 @@ const checkIdempotency = (ttl = 86400) => {
       next();
     } catch (error) {
       logger.error('Idempotency middleware error:', error);
-      // Don't block request if Redis fails
+      // Don't block request if cache fails
       next();
     }
   };

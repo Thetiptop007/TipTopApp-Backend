@@ -56,13 +56,12 @@ logger.add(
   })
 );
 
-// Stream for Morgan HTTP logger - only log errors and slow requests
+// Stream for Morgan HTTP logger - log all messages that Morgan sends
 logger.stream = {
   write: (message) => {
-    // Only log if it's an error status code or warning
-    if (message.includes(' 4') || message.includes(' 5') || message.includes('WARN')) {
-      logger.info(message.trim());
-    }
+    // Morgan skip function already filters out success responses in production
+    // So this stream only receives errors and requests that should be logged
+    logger.info(message.trim());
   },
 };
 

@@ -2,6 +2,8 @@
  * APIFeatures class for advanced query operations
  * Provides filtering, sorting, field limiting, and pagination
  */
+const logger = require('./logger');
+
 class APIFeatures {
   constructor(query, queryString) {
     this.query = query;
@@ -46,8 +48,7 @@ class APIFeatures {
     if (this.queryString.search) {
       const searchTerm = this.queryString.search.trim().toLowerCase();
       
-      console.log('\n🔍 [SEARCH DEBUG] Search initiated');
-      console.log('   Original search term:', searchTerm);
+      logger.debug('[Search] Search initiated with term:', searchTerm);
       
       // Store search term for relevance sorting later
       this._searchTerm = searchTerm;
@@ -101,7 +102,10 @@ class APIFeatures {
       // Check for common typo corrections
       const correctedTerm = typoMappings[searchTerm];
       if (correctedTerm) {
-        console.log('   ✓ Typo correction applied:', searchTerm, '→', correctedTerm);
+        logger.debug('[Search] Typo correction applied:', {
+          original: searchTerm,
+          corrected: correctedTerm
+        });
         const correctedPattern = correctedTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         searchPatterns.push(
           // Exact and contains for corrected term
@@ -112,7 +116,7 @@ class APIFeatures {
           { description: { $regex: `\\b${correctedPattern}`, $options: 'i' } }
         );
       } else {
-        console.log('   ℹ No typo correction needed');
+        logger.debug('[Search] No typo correction needed for:', searchTerm);
       }
       
       // Flexible pattern for typo tolerance (allows 1-2 character differences)
@@ -160,11 +164,13 @@ class APIFeatures {
       // Build search filter using $or
       const searchFilter = { $or: searchPatterns };
       
-      console.log('   Search patterns created:', searchPatterns.length);
+      logger.debug('[Search] Search patterns created:', {
+        patternCount: searchPatterns.length
+      });
       
       // Merge conditions with existing query
       if (Object.keys(currentConditions).length > 0) {
-        console.log('   Merging with existing query conditions');
+        logger.debug('[Search] Merging with existing query conditions');
         if (currentConditions.$and) {
           currentConditions.$and.push(searchFilter);
           this.query.setQuery(currentConditions);
@@ -175,7 +181,7 @@ class APIFeatures {
           this.query.setQuery(mergedConditions);
         }
       } else {
-        console.log('   Using search filter as main query');
+        logger.debug('[Search] Using search filter as main query');
         this.query.setQuery(searchFilter);
       }
     }
@@ -256,14 +262,13 @@ class APIFeatures {
     
     // For search relevance, we need to get ALL matching documents before pagination
     if (this._searchTerm) {
-      console.log('\n📊 [RELEVANCE SCORING] Starting relevance calculation');
-      console.log('   Search term:', this._searchTerm);
+      logger.debug('[Relevance Scoring] Starting relevance calculation for term:', this._searchTerm);
       
       // Clone the query without skip/limit for relevance sorting
       const queryWithoutPagination = this.query.model.find(this.query.getQuery());
       let allDocs = await queryWithoutPagination.select('-__v').exec();
       
-      console.log('   ✓ Found', allDocs.length, 'matching documents');
+      logger.debug('[Relevance Scoring] Found matching documents:', allDocs.length);
       
       if (allDocs.length > 0) {
         const searchTerm = this._searchTerm.toLowerCase();
@@ -292,7 +297,10 @@ class APIFeatures {
         const correctedSearchTerm = typoMappings[searchTerm] || searchTerm;
         
         if (correctedSearchTerm !== searchTerm) {
-          console.log('   ✓ Using corrected term for scoring:', searchTerm, '→', correctedSearchTerm);
+          logger.debug('[Relevance Scoring] Using corrected term for scoring:', {
+            original: searchTerm,
+            corrected: correctedSearchTerm
+          });
         }
         
         allDocs = allDocs.map(doc => {
@@ -414,15 +422,19 @@ class APIFeatures {
         // Sort by relevance score (highest first)
         allDocs.sort((a, b) => b.relevanceScore - a.relevanceScore);
         
-        // Log top 10 results with scores
-        console.log('\n   📋 Top results by relevance:');
-        allDocs.slice(0, 10).forEach((item, index) => {
+        // Log top results with scores
+        const topResults = allDocs.slice(0, 10).map((item, index) => {
           const docObj = item.doc.toObject ? item.doc.toObject() : item.doc;
           const name = docObj.name && typeof docObj.name === 'string' 
             ? docObj.name 
             : `${docObj.name?.first || ''} ${docObj.name?.last || ''}`.trim();
-          console.log(`   ${index + 1}. [${item.relevanceScore}] ${name}`);
+          return {
+            rank: index + 1,
+            score: item.relevanceScore,
+            name: name
+          };
         });
+        logger.debug('[Relevance Scoring] Top results by relevance:', topResults);
         
         // Extract just the documents
         allDocs = allDocs.map(item => item.doc);
@@ -433,8 +445,7 @@ class APIFeatures {
         const total = allDocs.length;
         const totalPages = Math.ceil(total / limit);
         
-        console.log(`\n   ✓ Returning page ${page}/${totalPages} (${docs.length} items)`);
-        console.log('─────────────────────────────────────────\n');
+        logger.debug(`[Relevance Scoring] Returning page ${page}/${totalPages} with ${docs.length} items`);
         
         return {
           data: docs,

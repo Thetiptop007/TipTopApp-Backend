@@ -8,6 +8,7 @@
 const express = require('express');
 const offerController = require('../controllers/offer.controller');
 const authMiddleware = require('../middlewares/auth');
+const { cacheMiddleware } = require('../middlewares/cache');
 
 const router = express.Router();
 
@@ -16,10 +17,10 @@ const router = express.Router();
 ===================================================== */
 
 // Get active offers
-router.get('/active', offerController.getActiveOffers);
+router.get('/active', cacheMiddleware(30, 'offers'), offerController.getActiveOffers);
 
 // Get teaser offers (upcoming)
-router.get('/teasers', offerController.getTeaserOffers);
+router.get('/teasers', cacheMiddleware(30, 'offers'), offerController.getTeaserOffers);
 
 // Check applicable offers for cart items
 router.post('/check', offerController.checkApplicableOffers);

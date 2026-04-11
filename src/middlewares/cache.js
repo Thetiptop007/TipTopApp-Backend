@@ -1,6 +1,32 @@
 const cache = require('../utils/cache');
 const logger = require('../utils/logger');
 
+const pendingResponses = new Map();
+const SENSITIVE_ROUTE_PATTERNS = [
+  '/api/v1/auth',
+  '/api/v1/orders',
+  '/api/v1/payments',
+  '/api/v1/admin',
+];
+
+const IGNORED_CACHE_QUERY_PARAMS = new Set(['_t', 'timestamp', 'ts', 'cacheBust']);
+
+const normalizeCacheKey = (req, keyPrefix) => {
+  const sortedEntries = Object.entries(req.query || {})
+    .filter(([key]) => !IGNORED_CACHE_QUERY_PARAMS.has(key))
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  const normalizedQuery = sortedEntries
+    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(',') : value}`)
+    .join('&');
+
+  const routePath = `${req.baseUrl || ''}${req.path || ''}`;
+  const pathOnly = routePath || req.originalUrl.split('?')[0];
+  return normalizedQuery
+    ? `${keyPrefix}:${pathOnly}?${normalizedQuery}`
+    : `${keyPrefix}:${pathOnly}`;
+};
+
 /**
  * Cache middleware factory
  * Caches GET requests based on URL and query parameters
@@ -14,9 +40,14 @@ const cacheMiddleware = (ttl = 300, keyPrefix = 'api') => {
       return next();
     }
 
+    // Safety guard: never cache sensitive or user-specific paths.
+    if (SENSITIVE_ROUTE_PATTERNS.some((route) => req.originalUrl.startsWith(route))) {
+      return next();
+    }
+
     try {
-      // Generate cache key from URL and query params
-      const cacheKey = `${keyPrefix}:${req.originalUrl}`;
+      // Generate cache key from normalized URL/query params
+      const cacheKey = normalizeCacheKey(req, keyPrefix);
 
       // Try to get cached response
       const cachedData = await cache.get(cacheKey);
@@ -26,7 +57,22 @@ const cacheMiddleware = (ttl = 300, keyPrefix = 'api') => {
         return res.status(200).json(cachedData);
       }
 
+      // Deduplicate concurrent identical requests while first response is in-flight.
+      if (pendingResponses.has(cacheKey)) {
+        const pendingData = await pendingResponses.get(cacheKey);
+        if (pendingData) {
+          logger.debug(`Cache IN-FLIGHT HIT: ${cacheKey}`);
+          return res.status(200).json(pendingData);
+        }
+      }
+
       logger.debug(`Cache MISS: ${cacheKey}`);
+
+      let resolvePending;
+      const pendingPromise = new Promise((resolve) => {
+        resolvePending = resolve;
+      });
+      pendingResponses.set(cacheKey, pendingPromise);
 
       // Store original res.json
       const originalJson = res.json.bind(res);
@@ -39,8 +85,17 @@ const cacheMiddleware = (ttl = 300, keyPrefix = 'api') => {
             logger.error('Cache set error:', err);
           });
         }
+        resolvePending(data);
+        pendingResponses.delete(cacheKey);
         return originalJson(data);
       };
+
+      res.on('close', () => {
+        if (pendingResponses.has(cacheKey)) {
+          resolvePending(null);
+          pendingResponses.delete(cacheKey);
+        }
+      });
 
       next();
     } catch (error) {

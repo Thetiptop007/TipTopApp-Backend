@@ -179,13 +179,8 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
   const taxAmount = Math.round((itemsTotal + deliveryFee) * (taxRate / 100));
   const finalAmount = itemsTotal + deliveryFee + taxAmount;
 
-  // Generate order number
-  const orderCount = await Order.countDocuments();
-  const orderNumber = `ORD-${String(orderCount + 1).padStart(6, '0')}`;
-
   // Create order
   const order = await Order.create({
-    orderNumber,
     customer: {
       id: customer._id,
       name: customerName,
@@ -218,7 +213,7 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
     specialInstructions,
   });
 
-  logger.info(`Admin ${req.user.email.address} created ${orderType} order ${orderNumber} for ${customerName}`);
+  logger.info(`Admin ${req.user.email.address} created ${orderType} order ${order.orderNumber} for ${customerName}`);
 
   // Emit real-time notification (don't let this block response)
   try {
@@ -1182,6 +1177,8 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
 
 exports.getPOSMenuItems = catchAsync(async (req, res, next) => {
   const { page = 1, limit = 50, category, search } = req.query;
+  const safePage = Math.max(parseInt(page, 10) || 1, 1);
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 20);
 
   // Build query - only available items (isActive not checked, only isAvailable matters for ordering)
   const query = { isAvailable: true };
@@ -1197,8 +1194,8 @@ exports.getPOSMenuItems = catchAsync(async (req, res, next) => {
   // Get items with minimal fields for fast loading
   const items = await MenuItem.find(query)
     .select('name image categories priceVariants isAvailable')
-    .skip((page - 1) * limit)
-    .limit(parseInt(limit))
+    .skip((safePage - 1) * safeLimit)
+    .limit(safeLimit)
     .lean();
 
   const total = await MenuItem.countDocuments(query);
@@ -1223,10 +1220,10 @@ exports.getPOSMenuItems = catchAsync(async (req, res, next) => {
     data: {
       items: posItems,
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / limit),
+        currentPage: safePage,
+        totalPages: Math.ceil(total / safeLimit),
         totalItems: total,
-        limit: parseInt(limit)
+        limit: safeLimit
       }
     }
   });
@@ -1336,13 +1333,8 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
   const tax = (itemsTotal * taxRate) / 100;
   const finalAmount = itemsTotal + tax + deliveryFee;
 
-  // Generate order number
-  const orderCount = await Order.countDocuments();
-  const orderNumber = `ORD-${String(orderCount + 1).padStart(6, '0')}`;
-
   // Create order
   const order = await Order.create({
-    orderNumber,
     customer: {
       // No customer.id for admin orders - they're walk-in/phone customers
       name: customer.name,
@@ -1380,7 +1372,7 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
     logger.error('Socket emit error:', error);
   }
 
-  logger.info(`✅ Admin order created: ${orderNumber}`);
+  logger.info(`✅ Admin order created: ${order.orderNumber}`);
 
   res.status(201).json({
     status: 'success',
@@ -1558,17 +1550,12 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   // Calculate final amount
   const finalAmount = subtotal + deliveryCharges + taxAmount - discountAmount;
 
-  // Generate unique order number
-  const orderCount = await Order.countDocuments();
-  const orderNumber = `ORD-${String(orderCount + 1).padStart(6, '0')}`;
-
   // Determine payment status based on method
   const paymentStatus = paymentMethod === 'COD' ? 'PENDING' : 
                        paymentDetails?.transactionId ? 'PAID' : 'PENDING';
 
   // Create order
   const order = await Order.create({
-    orderNumber,
     customer: {
       id: req.user._id,
       name: `${req.user.name.first} ${req.user.name.last}`,

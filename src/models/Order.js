@@ -1,5 +1,62 @@
 const mongoose = require('mongoose');
 
+const ORDER_COUNTER_ID = 'orderNumber';
+
+const getMaxExistingOrderSequence = async () => {
+  const result = await mongoose.model('Order').aggregate([
+    { $match: { orderNumber: { $regex: /^ORD-\d+$/ } } },
+    {
+      $project: {
+        seq: {
+          $toInt: {
+            $arrayElemAt: [{ $split: ['$orderNumber', '-'] }, 1],
+          },
+        },
+      },
+    },
+    { $group: { _id: null, maxSeq: { $max: '$seq' } } },
+  ]);
+
+  return result?.[0]?.maxSeq || 0;
+};
+
+const getNextOrderSequence = async () => {
+  const countersCollection = mongoose.connection.collection('counters');
+  const counterId = ORDER_COUNTER_ID;
+
+  const existingCounter = await countersCollection.findOne({ _id: counterId });
+
+  if (!existingCounter) {
+    const maxExistingSeq = await getMaxExistingOrderSequence();
+
+    try {
+      await countersCollection.insertOne({
+        _id: counterId,
+        seq: maxExistingSeq,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    } catch (error) {
+      // If another request initialized it first, continue with atomic increment.
+      if (error.code !== 11000) {
+        throw error;
+      }
+    }
+  }
+
+  const counter = await countersCollection.findOneAndUpdate(
+    { _id: counterId },
+    {
+      $inc: { seq: 1 },
+      $set: { updatedAt: new Date() },
+      $setOnInsert: { createdAt: new Date() },
+    },
+    { returnDocument: 'after', upsert: true }
+  );
+
+  return counter.value.seq;
+};
+
 // Customization Sub-schema
 const orderCustomizationSchema = new mongoose.Schema({
   name: String,
@@ -367,8 +424,8 @@ orderSchema.virtual('deliveryTime').get(function () {
 // Generate order number before saving
 orderSchema.pre('save', async function () {
   if (this.isNew && !this.orderNumber) {
-    const count = await mongoose.model('Order').countDocuments();
-    this.orderNumber = `ORD-${String(count + 1).padStart(6, '0')}`;
+    const nextSequence = await getNextOrderSequence();
+    this.orderNumber = `ORD-${String(nextSequence).padStart(6, '0')}`;
   }
 });
 

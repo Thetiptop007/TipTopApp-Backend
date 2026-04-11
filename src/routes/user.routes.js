@@ -1,6 +1,7 @@
 const express = require('express');
 const userController = require('../controllers/user.controller');
 const authMiddleware = require('../middlewares/auth');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -12,12 +13,10 @@ router.use(authMiddleware.restrictTo('admin'));
 
 // Add logging middleware for all user routes
 router.use((req, res, next) => {
-  console.log('🟢 [USER ROUTES] Request received:', {
+  logger.debug('[User Routes] Request received:', {
     method: req.method,
     path: req.path,
-    fullUrl: req.originalUrl,
-    query: req.query,
-    timestamp: new Date().toISOString()
+    query: req.query
   });
   next();
 });

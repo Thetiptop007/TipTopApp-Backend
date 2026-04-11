@@ -1,9 +1,10 @@
 /**
  * Request Deduplication Middleware
  * Prevents processing duplicate requests within a short time window
+ * Uses in-memory cache for fast deduplication
  */
 
-const redis = require('../config/redis');
+const cache = require('../utils/cache');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 
@@ -19,7 +20,7 @@ const deduplicateRequest = (windowSeconds = 5) => {
       const dedupeKey = `dedupe:${fingerprint}`;
 
       // Check if identical request was made recently
-      const exists = await redis.get(dedupeKey);
+      const exists = await cache.get(dedupeKey);
 
       if (exists) {
         logger.warn(`🚫 Duplicate request blocked: ${req.method} ${req.path}`);
@@ -34,12 +35,12 @@ const deduplicateRequest = (windowSeconds = 5) => {
       }
 
       // Mark this request as processed
-      await redis.setex(dedupeKey, windowSeconds, Date.now().toString());
+      await cache.set(dedupeKey, Date.now().toString(), windowSeconds);
 
       next();
     } catch (error) {
       logger.error('Request deduplication error:', error);
-      // Don't block request if Redis fails
+      // Don't block request if cache fails
       next();
     }
   };

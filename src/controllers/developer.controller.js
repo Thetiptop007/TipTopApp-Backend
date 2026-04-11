@@ -37,8 +37,9 @@ exports.getSystemHealth = catchAsync(async (req, res, next) => {
         status: 'connected', // Will be determined by actual connection
         type: 'MongoDB',
       },
-      redis: {
-        status: process.env.REDIS_URL ? 'configured' : 'not-configured',
+      cache: {
+        status: 'in-memory',
+        type: 'Node.js In-Memory Cache',
       },
       email: {
         status: process.env.RESEND_API_KEY ? 'configured' : 'not-configured',
@@ -378,7 +379,7 @@ exports.getConfig = catchAsync(async (req, res, next) => {
     port: process.env.PORT,
     services: {
       database: process.env.MONGODB_URI ? 'configured' : 'not-configured',
-      redis: process.env.REDIS_URL ? 'configured' : 'not-configured',
+      cache: 'in-memory',
       email: process.env.RESEND_API_KEY ? 'configured' : 'not-configured',
       firebase: process.env.FIREBASE_SERVICE_ACCOUNT ? 'configured' : 'not-configured',
     },

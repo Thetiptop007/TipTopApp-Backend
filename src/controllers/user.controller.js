@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
  * Admin only
  */
 exports.getAllUsers = catchAsync(async (req, res, next) => {
-  console.log('🔵 [getAllUsers - USER CONTROLLER] Called with query:', req.query);
+  logger.debug('[getAllUsers - USER CONTROLLER] Called with query:', req.query);
   
   // Don't use limitFields for users - we need all user data except sensitive fields
   // Filter to only return active users
@@ -22,7 +22,7 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
 
   const result = await features.execute(User);
 
-  console.log('🔵 [getAllUsers - USER CONTROLLER] Result:', {
+  logger.debug('[getAllUsers - USER CONTROLLER] Result:', {
     dataLength: result.data.length,
     pagination: result.pagination
   });

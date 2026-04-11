@@ -2,6 +2,7 @@ const Category = require('../models/category.model');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/AppError');
 const APIFeatures = require('../utils/APIFeatures');
+const logger = require('../utils/logger');
 
 /**
  * Get all categories with pagination and filtering
@@ -31,15 +32,6 @@ exports.getAllCategories = catchAsync(async (req, res, next) => {
   const startIndex = (page - 1) * limit;
   const endIndex = startIndex + limit;
   const paginatedCategories = filteredCategories.slice(startIndex, endIndex);
-  
-  // Console log each category with its items (only for debugging)
-  const MenuItem = require('../models/MenuItem');
-  for (const category of paginatedCategories) {
-    const items = await MenuItem.find({ categories: category.name }).select('name');
-    console.log(`\n📁 Category: ${category.name}`);
-    console.log(`   Items Count: ${category.itemCount}`);
-    console.log(`   Items: ${items.map(item => item.name).join(', ') || 'None'}`);
-  }
 
   res.status(200).json({
     status: 'success',
@@ -69,16 +61,6 @@ exports.getCategoryById = catchAsync(async (req, res, next) => {
 
   const MenuItem = require('../models/MenuItem');
   const itemCount = await MenuItem.countDocuments({ categories: category.name });
-  
-  // Console log category with its items
-  const items = await MenuItem.find({ categories: category.name }).select('name');
-  console.log(`\n📁 Category Details: ${category.name}`);
-  console.log(`   Items Count: ${itemCount}`);
-  console.log(`   Items: ${items.map(item => item.name).join(', ') || 'None'}`);
-  console.log(`   Active: ${category.isActive}`);
-  console.log(`   Color: ${category.color}`);
-  console.log(`   Description: ${category.description || 'None'}`);
-  console.log('');
 
   res.status(200).json({
     status: 'success',
@@ -178,22 +160,17 @@ exports.deleteCategory = catchAsync(async (req, res, next) => {
   const itemCount = await MenuItem.countDocuments({ categories: category.name });
 
   if (itemCount > 0) {
-    // Log the items that are blocking deletion
-    const items = await MenuItem.find({ categories: category.name }).select('name');
-    console.log(`\n❌ Cannot delete category: ${category.name}`);
-    console.log(`   Reason: ${itemCount} items are associated with this category`);
-    console.log(`   Associated Items: ${items.map(item => item.name).join(', ')}`);
-    console.log(`   Action Required: Remove items from this category before deletion\n`);
+    logger.warn(`[Category Delete] Cannot delete category \"${category.name}\" with ${itemCount} associated items`);
     
     return next(
       new AppError(
-        `Cannot delete category "${category.name}" with ${itemCount} menu items. Please reassign or delete the items first: ${items.map(item => item.name).join(', ')}`,
+        `Cannot delete category "${category.name}" with ${itemCount} menu items. Please reassign or delete the items first.`,
         400
       )
     );
   }
   
-  console.log(`\n✅ Deleting category: ${category.name} (No items associated)\n`);
+  logger.info(`[Category Delete] Deleting category: ${category.name} (No items associated)`);
 
   await category.deleteOne();
 

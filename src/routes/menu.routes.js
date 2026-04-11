@@ -20,6 +20,9 @@ const router = express.Router();
 // Get popular items (must be before /:id) - Cache for 10 minutes
 router.get('/popular/items', cacheMiddleware(600, 'menu'), menuController.getPopularItems);
 
+// Get full menu snapshot for shared frontend filtering - Cache for 60 seconds
+router.get('/all', cacheMiddleware(60, 'menu'), menuController.getAllMenuForCache);
+
 // Get all categories (must be before /:id) - Cache for 15 minutes
 router.get('/categories/all', cacheMiddleware(900, 'menu'), menuController.getAllCategories);
 

@@ -12,6 +12,11 @@ const orderValidator = require('../validators/order.validator');
 const { checkIdempotency } = require('../middlewares/idempotency.middleware');
 const { deduplicateRequest } = require('../middlewares/deduplication.middleware');
 const { checkShopOpen } = require('../middlewares/shopStatus.middleware');
+const {
+  guestOrderLimiter,
+  guestOrderCooldown,
+  checkGuestHoneypot,
+} = require('../middlewares/guestOrderProtection.middleware');
 
 const router = express.Router();
 
@@ -22,6 +27,9 @@ const router = express.Router();
 // Guest order creation (no authentication) - Check if shop is open
 router.post(
   '/guest/create',
+  guestOrderLimiter,
+  guestOrderCooldown,
+  checkGuestHoneypot,
   checkShopOpen,
   orderValidator.validate(orderValidator.createGuestOrderSchema),
   orderController.createGuestOrder
