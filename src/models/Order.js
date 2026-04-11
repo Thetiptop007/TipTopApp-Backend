@@ -54,7 +54,16 @@ const getNextOrderSequence = async () => {
     { returnDocument: 'after', upsert: true }
   );
 
-  return counter.value.seq;
+  // Driver compatibility:
+  // - Some versions return { value: {...} }
+  // - Newer versions return the document directly
+  const nextSeq = counter?.value?.seq ?? counter?.seq;
+
+  if (typeof nextSeq !== 'number') {
+    throw new Error('Failed to generate order sequence from counter');
+  }
+
+  return nextSeq;
 };
 
 // Customization Sub-schema
