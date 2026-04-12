@@ -295,6 +295,8 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ 'email.address': 1 }, { unique: true });
 userSchema.index({ 'phone.number': 1 }, { unique: true });
 userSchema.index({ role: 1, isActive: 1 });
+userSchema.index({ role: 1, isActive: 1, 'customerData.totalOrders': -1 });
+userSchema.index({ role: 1, isActive: 1, 'customerData.totalSpent': -1 });
 userSchema.index({ 'addresses.coordinates': '2dsphere' });
 userSchema.index({ 'deliveryData.currentLocation.coordinates': '2dsphere' });
 userSchema.index({ 'deliveryData.availability': 1, role: 1 });

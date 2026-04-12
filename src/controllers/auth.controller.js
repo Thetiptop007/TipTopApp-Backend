@@ -254,6 +254,12 @@ exports.login = catchAsync(async (req, res, next) => {
     return next(new AppError('Incorrect email/phone or password.', 401));
   }
 
+  if (user.isBlocked) {
+    logger.warn(`[LOGIN] Failed - Blocked user attempted login: ${user.email.address}`);
+    logger.info(`========================================\n`);
+    return next(new AppError('Your account has been blocked. Please contact support.', 403));
+  }
+
   logger.info(`[LOGIN] SUCCESS - User logged in: ${user.email.address} (ID: ${user._id}, Role: ${user.role})`);
   logger.info(`========================================\n`);
 

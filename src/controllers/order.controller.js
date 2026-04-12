@@ -1178,7 +1178,7 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
 exports.getPOSMenuItems = catchAsync(async (req, res, next) => {
   const { page = 1, limit = 50, category, search } = req.query;
   const safePage = Math.max(parseInt(page, 10) || 1, 1);
-  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 20);
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 1000);
 
   // Build query - only available items (isActive not checked, only isAvailable matters for ordering)
   const query = { isAvailable: true };

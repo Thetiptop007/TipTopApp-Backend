@@ -168,9 +168,26 @@ exports.restoreUser = catchAsync(async (req, res, next) => {
 exports.toggleBlockUser = catchAsync(async (req, res, next) => {
   const { isBlocked, blockReason } = req.body;
 
+  if (typeof isBlocked !== 'boolean') {
+    return next(new AppError('isBlocked must be a boolean value', 400));
+  }
+
+  const existingUser = await User.findById(req.params.id);
+
+  if (!existingUser) {
+    return next(new AppError('User not found', 404));
+  }
+
+  if (existingUser.role === 'admin') {
+    return next(new AppError('Admin users cannot be blocked from this endpoint', 400));
+  }
+
   const user = await User.findByIdAndUpdate(
     req.params.id,
-    { isBlocked, blockReason },
+    {
+      isBlocked,
+      blockReason: isBlocked ? (blockReason || 'Blocked by admin') : '',
+    },
     { new: true }
   );
 

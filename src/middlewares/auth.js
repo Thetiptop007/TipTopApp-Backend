@@ -61,6 +61,12 @@ exports.protect = catchAsync(async (req, res, next) => {
     );
   }
 
+  if (user.isBlocked) {
+    return next(
+      new AppError('Your account has been blocked. Please contact support.', 403)
+    );
+  }
+
   // 5) Check if user changed password after token was issued
   if (user.passwordChangedAt) {
     const changedTimestamp = parseInt(
