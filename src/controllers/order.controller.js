@@ -18,6 +18,23 @@ const mongoose = require('mongoose');
 const notificationService = require('../services/notification.service');
 const { emitOrderUpdate, emitUserNotification, emitNewOrder } = require('../utils/socket');
 
+const getCustomerSourceType = (order) => {
+  if (order?.placedBy === 'ADMIN') {
+    return 'ADMIN';
+  }
+
+  const deviceType = order?.metadata?.deviceType;
+  if (deviceType === 'web-guest') {
+    return 'GUEST';
+  }
+
+  if (deviceType === 'web-customer') {
+    return 'LOGGED_IN';
+  }
+
+  return order?.customer?.id ? 'LOGGED_IN' : 'GUEST';
+};
+
 /* =====================================================
    ADMIN RELATED ORDER CONTROLLERS
 ===================================================== */
@@ -875,7 +892,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
   const activeOrders = await Order.find({
     status: { $in: activeStatuses }
   })
-    .select('orderNumber customer items pricing status orderType deliveryPartner createdAt deliveryAddress')
+    .select('orderNumber customer items pricing status orderType deliveryPartner createdAt deliveryAddress placedBy metadata.deviceType')
     .lean()
     .sort({ createdAt: -1 });
 
@@ -884,7 +901,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
     createdAt: { $gte: startOfDay, $lte: endOfDay },
     status: { $in: inactiveStatuses }
   })
-    .select('orderNumber customer.name customer.phone pricing.finalAmount status orderType createdAt items deliveryAddress')
+    .select('orderNumber customer pricing.finalAmount status orderType createdAt items deliveryAddress placedBy metadata.deviceType')
     .lean()
     .sort({ createdAt: -1 });
 
@@ -924,6 +941,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       orderId: order.orderNumber,
       customer: `${order.customer?.name || 'N/A'}`,
       phone: order.customer?.phone || 'N/A',
+      customerType: getCustomerSourceType(order),
       orderType: order.orderType || 'DELIVERY', // Include orderType - critical for UI logic
       items: transformedItems,
       itemCount: order.items?.length || 0,
@@ -981,6 +999,7 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       orderId: order.orderNumber,
       customer: `${order.customer?.name || 'N/A'}`,
       phone: order.customer?.phone || 'N/A',
+      customerType: getCustomerSourceType(order),
       orderType: order.orderType || 'DELIVERY',
       items: [], // Empty for performance - will be populated on expand
       itemCount: order.items?.length || 0,
@@ -1038,7 +1057,7 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
 
   // Fetch orders (summary only but include items for count)
   const orders = await Order.find()
-    .select('orderNumber customer.name customer.phone pricing.finalAmount status orderType createdAt items')
+    .select('orderNumber customer pricing.finalAmount status orderType createdAt items placedBy metadata.deviceType')
     .lean()
     .sort({ createdAt: -1 })
     .skip(skip)
@@ -1071,6 +1090,7 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
     orderId: order.orderNumber,
     customer: `${order.customer?.name || 'N/A'}`,
     phone: order.customer?.phone || 'N/A',
+    customerType: getCustomerSourceType(order),
     orderType: order.orderType || 'DELIVERY',
     items: [], // Will be populated on expand
     itemCount: order.items?.length || 0,
@@ -1103,7 +1123,7 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
 
 exports.getOrderDetails = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id)
-    .select('orderNumber customer items pricing status orderType createdAt deliveryAddress')
+    .select('orderNumber customer items pricing status orderType createdAt deliveryAddress placedBy metadata.deviceType')
     .lean();
 
   if (!order) {
@@ -1140,6 +1160,7 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
     orderId: order.orderNumber,
     customer: `${order.customer?.name || 'N/A'}`,
     phone: order.customer?.phone || 'N/A',
+    customerType: getCustomerSourceType(order),
     orderType: order.orderType || 'DELIVERY',
     items: order.items?.map(item => ({
       name: item.name,

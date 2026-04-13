@@ -15,7 +15,7 @@
       "logs"
     ],
     "ext": "js,json,env",
-    "delay": "250"
+    "delay": 250
   },
   "scripts": {
     "dev": "cross-env NODE_ENV=development nodemon server.js",
