@@ -9,7 +9,7 @@ const logger = require('../utils/logger');
 /**
  * Register new delivery partner
  * POST /api/v1/delivery/register
- * Admin only
+ * Admin only ...
  */
 exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
   const { name, email, phone, password, vehicleType } = req.body;
