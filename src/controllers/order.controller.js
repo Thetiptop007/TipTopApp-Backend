@@ -16,6 +16,10 @@ const emailService = require('../services/email.service');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
 const notificationService = require('../services/notification.service');
+const { bulkUpdateOrderStatus: bulkUpdateOrderStatusService } = require('../services/order-bulk.service');
+const {
+  updateOrderStatus: applyOrderStatusUpdate,
+} = require('../services/order.service');
 const { emitOrderUpdate, emitUserNotification, emitNewOrder } = require('../utils/socket');
 
 /* =====================================================
@@ -528,6 +532,30 @@ exports.markOrderReady = catchAsync(async (req, res, next) => {
     status: 'success',
     message: 'Order marked as ready',
     data: { order },
+  });
+});
+
+exports.bulkUpdateOrderStatus = catchAsync(async (req, res, next) => {
+  const { orderIds, status } = req.body;
+
+  if (!req.user || req.user.role !== 'admin') {
+    return next(new AppError('Only admins can perform bulk order updates', 403));
+  }
+
+  const result = await bulkUpdateOrderStatusService({
+    orderIds,
+    status,
+    adminUserId: req.user._id,
+  });
+
+  logger.info(
+    `Bulk order status update by admin ${req.user._id}: requested=${result.totalRequested}, matched=${result.matched}, modified=${result.modified}, skipped=${result.skipped}, failed=${result.failed}, target=${status}`
+  );
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Bulk order status update processed',
+    data: result,
   });
 });
 
@@ -1391,36 +1419,56 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
 });
 
 exports.updateOrderStatus = catchAsync(async (req, res, next) => {
-  const { status } = req.body;
-  
-  const order = await Order.findByIdAndUpdate(
-    req.params.id,
-    { 
-      status,
-      $push: {
-        statusHistory: {
-          status,
-          timestamp: new Date(),
-          updatedBy: req.user?._id
-        }
-      }
-    },
-    { new: true, runValidators: true }
-  );
+  const { status, note, notes } = req.body;
+
+  const order = await Order.findById(req.params.id);
 
   if (!order) {
-    return res.status(404).json({
-      status: 'error',
-      message: 'Order not found'
+    return next(new AppError('Order not found', 404));
+  }
+
+  if (req.user.role === 'delivery') {
+    if (
+      !order.deliveryPartner ||
+      !order.deliveryPartner.id ||
+      order.deliveryPartner.id.toString() !== req.user._id.toString()
+    ) {
+      return next(
+        new AppError('You can only update orders assigned to you', 403)
+      );
+    }
+  }
+
+  const appliedStatus = await applyOrderStatusUpdate(order, status, req.user._id, note || notes);
+
+  logger.info(`Order ${order.orderNumber} status updated to ${appliedStatus} by ${req.user.email.address}`);
+
+  try {
+    emitOrderUpdate(order._id.toString(), {
+      status: order.status,
+      message: `Order status updated to ${appliedStatus}`,
+      orderNumber: order.orderNumber,
     });
+
+    if (order.customer && order.customer.id) {
+      emitUserNotification(order.customer.id.toString(), {
+        type: 'order_status_update',
+        title: 'Order Status Updated',
+        message: `Your order ${order.orderNumber} is now ${appliedStatus}`,
+        orderId: order._id,
+        status: order.status,
+      });
+    }
+  } catch (err) {
+    logger.warn('Failed to emit status update:', err.message);
   }
 
   res.status(200).json({
     status: 'success',
+    message: 'Order status updated successfully',
     data: {
-      orderId: order.orderNumber,
-      newStatus: order.status
-    }
+      order,
+    },
   });
 });
 
@@ -1757,132 +1805,6 @@ exports.getAllOrders_OLD_DELIVERY = catchAsync(async (req, res, next) => {
   });
 });
 
-exports.updateOrderStatus = catchAsync(async (req, res, next) => {
-  const { status, notes } = req.body;
-
-  const order = await Order.findById(req.params.id);
-
-  if (!order) {
-    return next(new AppError('Order not found', 404));
-  }
-
-  // Check if delivery partner is updating their own order
-  if (req.user.role === 'delivery') {
-    if (
-      !order.deliveryPartner ||
-      !order.deliveryPartner.id ||
-      order.deliveryPartner.id.toString() !== req.user._id.toString()
-    ) {
-      return next(
-        new AppError('You can only update orders assigned to you', 403)
-      );
-    }
-  }
-
-  // Use model method to update status
-  await order.updateStatus(status, notes);
-
-  logger.info(
-    `Order ${order.orderNumber} status updated to ${status} by ${req.user.email.address}`
-  );
-
-  // Emit real-time order status update
-  try {
-    emitOrderUpdate(order._id.toString(), {
-      status: order.status,
-      message: `Order status updated to ${status}`,
-      orderNumber: order.orderNumber,
-    });
-
-    // Notify customer
-    emitUserNotification(order.customer.id.toString(), {
-      type: 'order_status_update',
-      title: 'Order Status Updated',
-      message: `Your order ${order.orderNumber} is now ${status}`,
-      orderId: order._id,
-      status: order.status,
-    });
-  } catch (err) {
-    logger.warn('Failed to emit status update:', err.message);
-  }
-
-  // Send push notifications based on status
-  try {
-    const customer = await User.findById(order.customer.id);
-    if (customer) {
-      const customerTokens = customer.getActiveDeviceTokens();
-      
-      if (customerTokens && customerTokens.length > 0) {
-        logger.info(`[STATUS UPDATE NOTIFICATION] Sending to customer on ${customerTokens.length} device(s) - Status: ${status}`);
-        
-        // Map status to notification messages
-        const statusNotifications = {
-          'CONFIRMED': {
-            title: '✅ Order Confirmed!',
-            body: `Your order #${order.orderNumber} has been confirmed and is being prepared.`,
-            type: 'ORDER_CONFIRMED'
-          },
-          'PREPARING': {
-            title: '👨‍🍳 Order Preparing',
-            body: `Your order #${order.orderNumber} is being prepared by our kitchen.`,
-            type: 'ORDER_PREPARING'
-          },
-          'READY': {
-            title: '🎉 Order Ready!',
-            body: `Your order #${order.orderNumber} is ready for pickup!`,
-            type: 'ORDER_READY'
-          },
-          'OUT_FOR_DELIVERY': {
-            title: '🚚 Out for Delivery!',
-            body: `Your order #${order.orderNumber} is on its way to you!`,
-            type: 'ORDER_OUT_FOR_DELIVERY'
-          },
-          'DELIVERED': {
-            title: '✅ Order Delivered!',
-            body: `Your order #${order.orderNumber} has been delivered. Enjoy your meal!`,
-            type: 'ORDER_DELIVERED'
-          },
-          'CANCELLED': {
-            title: '❌ Order Cancelled',
-            body: `Your order #${order.orderNumber} has been cancelled.`,
-            type: 'ORDER_CANCELLED'
-          }
-        };
-        
-        const notification = statusNotifications[status];
-        if (notification) {
-          for (const token of customerTokens) {
-            await notificationService.sendCustomNotification(
-              token,
-              notification.title,
-              notification.body,
-              {
-                type: notification.type,
-                orderId: order._id.toString(),
-                orderNumber: order.orderNumber,
-                status: status,
-                timestamp: new Date().toISOString(),
-              }
-            );
-          }
-        }
-      } else {
-        logger.info(`[STATUS UPDATE NOTIFICATION] No active device tokens for customer ${customer._id}`);
-      }
-    }
-  } catch (err) {
-    logger.warn('[STATUS UPDATE NOTIFICATION] Failed to send push notification:', err.message);
-  }
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Order status updated successfully',
-    data: {
-      order,
-    },
-  });
-});
-
 exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
   const { deliveryPartnerId } = req.body;
 
@@ -1908,7 +1830,7 @@ exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
     name: `${deliveryPartner.name.first} ${deliveryPartner.name.last}`,
     phone: deliveryPartner.phone.number,
     vehicleNumber: deliveryPartner.deliveryData?.vehicleNumber || 'N/A'
-  });
+  }, req.user._id);
 
   logger.info(
     `Order ${order.orderNumber} assigned to ${deliveryPartner.name.first} ${deliveryPartner.name.last} by ${req.user.email.address}`

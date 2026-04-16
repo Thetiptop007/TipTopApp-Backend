@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const AppError = require('../utils/AppError');
 
 const ORDER_COUNTER_ID = 'orderNumber';
 
@@ -468,19 +469,27 @@ orderSchema.statics.findByCustomer = function (customerId, limit = 20) {
 };
 
 // Instance method to update status
-orderSchema.methods.updateStatus = async function (newStatus, updatedBy, notes) {
+orderSchema.methods.updateStatus = async function (newStatus, userId, note) {
+  const actorId = mongoose.Types.ObjectId.isValid(userId)
+    ? new mongoose.Types.ObjectId(String(userId))
+    : null;
+
+  if (!actorId) {
+    throw new AppError('updatedBy must be a valid ObjectId', 400);
+  }
+
   this.status = newStatus;
   this.statusHistory.push({
     status: newStatus,
     timestamp: new Date(),
-    updatedBy,
-    notes,
+    updatedBy: actorId,
+    notes: note,
   });
   await this.save();
 };
 
 // Instance method to assign delivery partner
-orderSchema.methods.assignDeliveryPartner = async function (partnerId, partnerDetails) {
+orderSchema.methods.assignDeliveryPartner = async function (partnerId, partnerDetails, updatedByUserId) {
   this.deliveryPartner = {
     id: partnerId,
     name: partnerDetails.name,
@@ -490,7 +499,7 @@ orderSchema.methods.assignDeliveryPartner = async function (partnerId, partnerDe
     pickedUpAt: new Date(), // Admin assignment = immediate pickup
   };
   // Change status to OUT_FOR_DELIVERY (same as agent claiming)
-  await this.updateStatus('OUT_FOR_DELIVERY');
+  await this.updateStatus('OUT_FOR_DELIVERY', updatedByUserId, 'Assigned delivery partner');
 };
 
 module.exports = mongoose.model('Order', orderSchema);

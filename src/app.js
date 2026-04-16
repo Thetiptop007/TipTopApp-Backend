@@ -14,6 +14,10 @@ const { errorHandler } = require('./middlewares/errorHandler.middleware');
 const cache = require('./utils/cache');
 
 const app = express();
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Do not expose Express fingerprint header
+app.disable('x-powered-by');
 
 morgan.format('tiptop-dev', ':method :url :status :response-time[0]ms');
 morgan.format('tiptop-prod', ':remote-addr - - [:date[clf]] ":method :url HTTP/:http-version" :status');
@@ -35,11 +39,18 @@ app.use(
         imgSrc: ["'self'", 'data:', 'https:'],
       },
     },
-    hsts: {
-      maxAge: 31536000,
-      includeSubDomains: true,
-      preload: true,
+    // HSTS only in production to avoid local HTTPS development issues
+    hsts: isProduction
+      ? {
+          maxAge: 31536000,
+          includeSubDomains: true,
+          preload: true,
+        }
+      : false,
+    referrerPolicy: {
+      policy: 'no-referrer',
     },
+    crossOriginEmbedderPolicy: false,
   })
 );
 
