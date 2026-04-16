@@ -149,6 +149,39 @@ exports.updateOrderStatusSchema = Joi.object({
 });
 
 /**
+ * Validation schema for bulk status updates (admin only)
+ */
+exports.bulkUpdateOrderStatusSchema = Joi.object({
+  orderIds: Joi.array()
+    .items(
+      Joi.string()
+        .trim()
+        .regex(/^[0-9a-fA-F]{24}$/)
+        .messages({
+          'string.pattern.base': 'Each order ID must be a valid MongoDB ObjectId',
+        })
+    )
+    .min(1)
+    .max(100)
+    .unique()
+    .required()
+    .messages({
+      'array.base': 'orderIds must be an array',
+      'array.min': 'At least one order ID is required',
+      'array.max': 'Cannot update more than 100 orders in one request',
+      'array.unique': 'Duplicate order IDs are not allowed',
+      'any.required': 'orderIds is required',
+    }),
+  status: Joi.string()
+    .valid('ACCEPTED', 'READY', 'DELIVERED', 'CANCELLED')
+    .required()
+    .messages({
+      'any.only': 'Status must be one of ACCEPTED, READY, DELIVERED, CANCELLED',
+      'any.required': 'status is required',
+    }),
+});
+
+/**
  * Validation schema for cancelling an order
  */
 exports.cancelOrderSchema = Joi.object({

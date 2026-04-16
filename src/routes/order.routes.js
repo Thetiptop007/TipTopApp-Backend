@@ -6,6 +6,7 @@
  */
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const orderController = require('../controllers/order.controller');
 const authMiddleware = require('../middlewares/auth');
 const orderValidator = require('../validators/order.validator');
@@ -19,6 +20,17 @@ const {
 } = require('../middlewares/guestOrderProtection.middleware');
 
 const router = express.Router();
+
+const bulkStatusUpdateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.BULK_STATUS_RATE_LIMIT_MAX || 60),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 'fail',
+    message: 'Too many bulk status update requests. Please retry shortly.',
+  },
+});
 
 /* =====================================================
    PUBLIC ORDER ROUTES (Guest Orders)
@@ -104,6 +116,15 @@ router.patch(
 
 // Admin accept order (PENDING → ACCEPTED)
 router.patch('/:id/accept', authMiddleware.restrictTo('admin'), deduplicateRequest(3), orderController.acceptOrder);
+
+// Admin bulk status update (single DB call, admin only)
+router.patch(
+  '/bulk-update-status',
+  authMiddleware.restrictTo('admin'),
+  bulkStatusUpdateLimiter,
+  orderValidator.validate(orderValidator.bulkUpdateOrderStatusSchema),
+  orderController.bulkUpdateOrderStatus
+);
 
 // Admin mark order as preparing (ACCEPTED → PREPARING)
 router.patch('/:id/preparing', authMiddleware.restrictTo('admin'), deduplicateRequest(3), orderController.markOrderPreparing);
