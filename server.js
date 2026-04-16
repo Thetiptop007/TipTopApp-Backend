@@ -73,6 +73,27 @@ setInterval(() => {
 
 const startServer = async () => {
   try {
+    // Validate critical environment variables on startup
+    const criticalEnvVars = ['JWT_SECRET', 'JWT_REFRESH_SECRET'];
+    const missingVars = criticalEnvVars.filter(varName => !process.env[varName]);
+    
+    if (missingVars.length > 0) {
+      logger.error('❌ CRITICAL: Missing required environment variables:', missingVars.join(', '));
+      logger.error('These variables are REQUIRED for JWT authentication to work across instances!');
+      logger.error('Set these in your environment before starting the server.');
+      
+      if (process.env.NODE_ENV === 'production') {
+        logger.error('Production mode: Cannot start without all env vars. Exiting...');
+        process.exit(1);
+      } else {
+        logger.warn('Development mode: Using default values (NOT SECURE)');
+      }
+    } else {
+      logger.info('✅ JWT Environment variables validated');
+      logger.info(`   JWT_SECRET length: ${process.env.JWT_SECRET.length} chars`);
+      logger.info(`   JWT_REFRESH_SECRET length: ${process.env.JWT_REFRESH_SECRET.length} chars`);
+    }
+
     logger.info('📡 Connecting to MongoDB...');
     await connectDB();
 
