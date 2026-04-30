@@ -140,10 +140,8 @@ exports.loginSchema = Joi.object({
  * Validation schema for refresh token
  */
 exports.refreshTokenSchema = Joi.object({
-  refreshToken: Joi.string().required().messages({
-    'string.empty': 'Refresh token is required',
-  }),
-});
+  refreshToken: Joi.string().optional(),
+}).unknown(true);
 
 /**
  * Validation schema for forgot password
