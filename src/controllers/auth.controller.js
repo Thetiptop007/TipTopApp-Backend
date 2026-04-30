@@ -99,10 +99,13 @@ exports.register = catchAsync(async (req, res, next) => {
     email,
     password,
     phone,
-    role = 'customer',
     addresses,
     preferences,
   } = req.body;
+
+  // Force role to 'customer' for any public registration request.
+  // Do NOT trust client-supplied `role` or `roles` fields.
+  const role = 'customer';
 
   logger.info(`[REGISTER] Attempt for email: ${email}, phone: ${phone}`);
 
@@ -125,16 +128,7 @@ exports.register = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Validate role - only certain roles can self-register
-  const allowedRoles = ['customer'];
-  if (!allowedRoles.includes(role)) {
-    return next(
-      new AppError(
-        'Invalid role. You can only register as a customer. Contact admin for other roles.',
-        400
-      )
-    );
-  }
+  // Server-side enforcement: role is forced to 'customer'.
 
   // Parse name into first and last name
   let firstName, lastName;
