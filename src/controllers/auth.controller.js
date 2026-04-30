@@ -7,15 +7,71 @@ const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
 const notificationService = require('../services/notification.service');
 
+const getAuthScope = (req, user = null) => {
+  const scope = String(req.headers['x-auth-scope'] || '').toLowerCase();
+  if (scope === 'admin' || scope === 'customer') {
+    return scope;
+  }
+
+  if (user) {
+    return user.role === 'admin' ? 'admin' : 'customer';
+  }
+
+  return 'customer';
+};
+
+const getRefreshCookieName = (scope) => (scope === 'admin' ? 'adminRefreshToken' : 'customerRefreshToken');
+
+const getRefreshCookieOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/api/v1/auth',
+});
+
+const parseRefreshTokenExpiryMs = () => {
+  const raw = process.env.JWT_REFRESH_EXPIRE || '7d';
+  const match = String(raw).trim().match(/^(\d+)([smhd])$/i);
+
+  if (!match) {
+    return 7 * 24 * 60 * 60 * 1000;
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const unitMs = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+
+  return amount * unitMs[unit];
+};
+
+const setRefreshCookie = (res, scope, token) => {
+  res.cookie(getRefreshCookieName(scope), token, {
+    ...getRefreshCookieOptions(),
+    maxAge: parseRefreshTokenExpiryMs(),
+  });
+};
+
+const clearRefreshCookie = (res, scope) => {
+  res.clearCookie(getRefreshCookieName(scope), getRefreshCookieOptions());
+};
+
 /**
  * Generate JWT tokens and send response
  */
 const createSendToken = async (user, statusCode, res, message = 'Success') => {
   const accessToken = user.generateAuthToken();
   const refreshToken = user.generateRefreshToken();
+  const scope = user.role === 'admin' ? 'admin' : 'customer';
 
+  await user.storeRefreshSession(scope, refreshToken);
   // Update last login
   await user.updateLastLogin();
+  setRefreshCookie(res, scope, refreshToken);
 
   // Remove password from output
   user.password = undefined;
@@ -28,7 +84,6 @@ const createSendToken = async (user, statusCode, res, message = 'Success') => {
       user,
       tokens: {
         accessToken,
-        refreshToken,
         expiresIn: process.env.JWT_EXPIRES_IN || '7d',
       },
     },
@@ -99,10 +154,13 @@ exports.register = catchAsync(async (req, res, next) => {
     email,
     password,
     phone,
-    role = 'customer',
     addresses,
     preferences,
   } = req.body;
+
+  // Force role to 'customer' for any public registration request.
+  // Do NOT trust client-supplied `role` or `roles` fields.
+  const role = 'customer';
 
   logger.info(`[REGISTER] Attempt for email: ${email}, phone: ${phone}`);
 
@@ -125,16 +183,7 @@ exports.register = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Validate role - only certain roles can self-register
-  const allowedRoles = ['customer'];
-  if (!allowedRoles.includes(role)) {
-    return next(
-      new AppError(
-        'Invalid role. You can only register as a customer. Contact admin for other roles.',
-        400
-      )
-    );
-  }
+  // Server-side enforcement: role is forced to 'customer'.
 
   // Parse name into first and last name
   let firstName, lastName;
@@ -290,8 +339,13 @@ exports.getMe = catchAsync(async (req, res, next) => {
  * PATCH /api/v1/auth/me
  */
 exports.logout = catchAsync(async (req, res, next) => {
-  // TODO: Implement token blacklisting if needed
-  // For now, client-side will remove the token
+  const scope = getAuthScope(req, req.user);
+
+  if (req.user) {
+    await req.user.revokeRefreshSession(scope);
+  }
+
+  clearRefreshCookie(res, scope);
 
   logger.info(`User logged out: ${req.user.email.address}`);
 
@@ -306,7 +360,9 @@ exports.logout = catchAsync(async (req, res, next) => {
  * POST /api/v1/auth/refresh-token
  */
 exports.refreshToken = catchAsync(async (req, res, next) => {
-  const { refreshToken } = req.body;
+  const scope = getAuthScope(req);
+  const cookieName = getRefreshCookieName(scope);
+  const refreshToken = req.cookies?.[cookieName] || req.body.refreshToken;
 
   if (!refreshToken) {
     return next(new AppError('Please provide a refresh token.', 400));
@@ -342,8 +398,18 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     return next(new AppError('Your account has been deactivated.', 401));
   }
 
+  const tokenMatchesSession = await user.verifyRefreshSession(scope, refreshToken);
+  if (!tokenMatchesSession) {
+    clearRefreshCookie(res, scope);
+    return next(new AppError('Invalid refresh token.', 401));
+  }
+
   // Generate new access token
   const newAccessToken = user.generateAuthToken();
+  const newRefreshToken = user.generateRefreshToken();
+
+  await user.storeRefreshSession(scope, newRefreshToken);
+  setRefreshCookie(res, scope, newRefreshToken);
 
   logger.info(`Access token refreshed for user: ${user.email.address}`);
 

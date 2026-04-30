@@ -213,6 +213,22 @@ const userSchema = new mongoose.Schema(
     emailVerificationToken: String,
     emailVerificationExpires: Date,
 
+    // Refresh token sessions (one active session per scope)
+    authSessions: {
+      admin: {
+        tokenHash: String,
+        issuedAt: Date,
+        expiresAt: Date,
+        lastUsedAt: Date,
+      },
+      customer: {
+        tokenHash: String,
+        issuedAt: Date,
+        expiresAt: Date,
+        lastUsedAt: Date,
+      },
+    },
+
     // Push Notification Tokens (FCM)
     deviceTokens: [
       {
@@ -426,6 +442,52 @@ userSchema.methods.generateRefreshToken = function () {
   return jwt.sign({ id: this._id, role: this.role }, process.env.JWT_REFRESH_SECRET, {
     expiresIn: process.env.JWT_REFRESH_EXPIRE,
   });
+};
+
+userSchema.methods.getRefreshScope = function () {
+  return this.role === 'admin' ? 'admin' : 'customer';
+};
+
+userSchema.methods.storeRefreshSession = async function (scope, refreshToken) {
+  const tokenHash = bcrypt.hashSync(refreshToken, 12);
+  const expiresIn = process.env.JWT_REFRESH_EXPIRE || '7d';
+  const expiresAt = new Date(Date.now() + (Number.parseInt(expiresIn, 10) || 7) * 24 * 60 * 60 * 1000);
+
+  this.authSessions = this.authSessions || {};
+  this.authSessions[scope] = {
+    tokenHash,
+    issuedAt: new Date(),
+    expiresAt,
+    lastUsedAt: new Date(),
+  };
+
+  await this.save({ validateBeforeSave: false });
+};
+
+userSchema.methods.revokeRefreshSession = async function (scope) {
+  if (this.authSessions && this.authSessions[scope]) {
+    delete this.authSessions[scope];
+    await this.save({ validateBeforeSave: false });
+  }
+};
+
+userSchema.methods.verifyRefreshSession = async function (scope, refreshToken) {
+  if (!this.authSessions || !this.authSessions[scope] || !this.authSessions[scope].tokenHash) {
+    return false;
+  }
+
+  const isValid = await bcrypt.compare(refreshToken, this.authSessions[scope].tokenHash);
+  if (isValid) {
+    this.authSessions[scope].lastUsedAt = new Date();
+    await this.save({ validateBeforeSave: false });
+  }
+
+  return isValid;
+};
+
+userSchema.methods.clearAllRefreshSessions = async function () {
+  this.authSessions = {};
+  await this.save({ validateBeforeSave: false });
 };
 
 // Update last login
