@@ -8,7 +8,7 @@ const router = express.Router();
 /**
  * All delivery routes require authentication
  */
-router.use(authMiddleware.protect);
+router.use(authMiddleware.protect());
 
 /**
  * Delivery Partner routes

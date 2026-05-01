@@ -5,7 +5,7 @@ const authMiddleware = require('../middlewares/auth');
 const addressValidator = require('../validators/address.validator');
 
 // All routes require authentication and customer role
-router.use(authMiddleware.protect);
+router.use(authMiddleware.protect('customer'));
 router.use(authMiddleware.restrictTo('customer'));
 
 // Address CRUD routes

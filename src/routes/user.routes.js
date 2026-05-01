@@ -8,7 +8,7 @@ const router = express.Router();
 /**
  * All user routes require authentication and admin role
  */
-router.use(authMiddleware.protect);
+router.use(authMiddleware.protect('admin'));
 router.use(authMiddleware.restrictTo('admin'));
 
 // Add logging middleware for all user routes

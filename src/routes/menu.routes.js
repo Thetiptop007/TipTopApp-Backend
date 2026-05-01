@@ -51,7 +51,7 @@ router.get('/:id', cacheMiddleware(600, 'menu'), menuController.getMenuItem);
 ===================================================== */
 
 // All routes below require authentication and admin role
-router.use(authMiddleware.protect);
+router.use(authMiddleware.protect('admin'));
 router.use(authMiddleware.restrictTo('admin'));
 
 // Get all categories (admin)

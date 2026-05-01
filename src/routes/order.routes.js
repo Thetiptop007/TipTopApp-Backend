@@ -73,7 +73,7 @@ router.post('/:orderId/printed', checkPrinterService, orderController.markOrderA
 ===================================================== */
 
 // All routes below require authentication
-router.use(authMiddleware.protect);
+router.use(authMiddleware.protect());
 
 // Create new order (customer) - Check if shop is open
 router.post(

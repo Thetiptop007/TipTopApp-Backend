@@ -7,7 +7,7 @@ const router = express.Router();
 /**
  * All routes require authentication and admin role
  */
-router.use(authMiddleware.protect);
+router.use(authMiddleware.protect('admin'));
 router.use(authMiddleware.restrictTo('admin'));
 
 /**

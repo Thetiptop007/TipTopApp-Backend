@@ -13,7 +13,7 @@ const orderValidator = require('../validators/order.validator');
 const router = express.Router();
 
 // All admin orders routes require authentication and admin role
-router.use(authMiddleware.protect);
+router.use(authMiddleware.protect('admin'));
 router.use(authMiddleware.restrictTo('admin'));
 
 // POS - Get minimal menu items for order creation (fast & light)

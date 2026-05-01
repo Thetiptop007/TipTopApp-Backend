@@ -464,9 +464,12 @@ class APIFeatures {
     // Execute the query normally (no search term or no results)
     const docs = await this.query;
 
-    // Use the actual query conditions for counting instead of rebuilding
-    const countQuery = this.query.model.find(this.query.getQuery());
-    const total = await countQuery.countDocuments();
+    // For unfiltered list pages, estimated count is much faster than a full countDocuments scan.
+    const currentConditions = this.query.getQuery();
+    const hasRealFilters = currentConditions && Object.keys(currentConditions).length > 0;
+    const total = hasRealFilters
+      ? await this.query.model.countDocuments(currentConditions)
+      : await this.query.model.estimatedDocumentCount();
     const totalPages = Math.ceil(total / limit);
 
     return {

@@ -13,7 +13,7 @@ const menuValidator = require('../validators/menu.validator');
 const router = express.Router();
 
 // All admin menu-items routes require authentication and admin role
-router.use(authMiddleware.protect);
+router.use(authMiddleware.protect('admin'));
 router.use(authMiddleware.restrictTo('admin'));
 
 // Get all categories (admin)

@@ -10,7 +10,7 @@ router.get('/', cacheMiddleware(30, 'settings'), getSettings);
 router.get('/shop-status', cacheMiddleware(15, 'settings'), getShopStatus);
 
 // Admin only routes
-router.put('/', authMiddleware.protect, authMiddleware.restrictTo('admin'), updateSettings);
-router.patch('/shop-status', authMiddleware.protect, authMiddleware.restrictTo('admin'), toggleShopStatus);
+router.put('/', authMiddleware.protect('admin'), authMiddleware.restrictTo('admin'), updateSettings);
+router.patch('/shop-status', authMiddleware.protect('admin'), authMiddleware.restrictTo('admin'), toggleShopStatus);
 
 module.exports = router;

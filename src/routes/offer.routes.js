@@ -30,7 +30,7 @@ router.post('/check', offerController.checkApplicableOffers);
 ===================================================== */
 
 // Protect all admin routes
-router.use('/admin', authMiddleware.protect);
+router.use('/admin', authMiddleware.protect('admin'));
 router.use('/admin', authMiddleware.restrictTo('admin', 'owner'));
 
 // Get all offers (with filters)
