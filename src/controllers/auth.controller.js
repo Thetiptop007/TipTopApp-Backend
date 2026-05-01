@@ -30,14 +30,14 @@ const getRefreshCookieName = (scope) => (scope === 'admin' ? 'adminRefreshToken'
 const getRefreshCookieOptions = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   path: '/',
 });
 
 const getLegacyRefreshCookieOptions = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   path: '/api/v1/auth',
 });
 
@@ -79,14 +79,14 @@ const getCsrfCookieName = (scope) => `${scope}CsrfToken`;
 const getCsrfCookieOptions = () => ({
   httpOnly: false,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   path: '/',
 });
 
 const getLegacyCsrfCookieOptions = () => ({
   httpOnly: false,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   path: '/api/v1/auth',
 });
 
