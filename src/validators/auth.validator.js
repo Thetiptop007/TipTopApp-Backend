@@ -1,5 +1,16 @@
 const Joi = require('joi');
 
+const strongPasswordSchema = Joi.string()
+  .min(8)
+  .max(128)
+  .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]+$/)
+  .messages({
+    'string.empty': 'Password is required',
+    'string.min': 'Password must be at least 8 characters',
+    'string.max': 'Password cannot exceed 128 characters',
+    'string.pattern.base': 'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character',
+  });
+
 /**
  * Validation schema for user registration
  */
@@ -31,15 +42,7 @@ exports.registerSchema = Joi.object({
     'string.email': 'Please provide a valid email address',
   }),
 
-  password: Joi.string()
-    .min(6)
-    .max(128)
-    .required()
-    .messages({
-      'string.empty': 'Password is required',
-      'string.min': 'Password must be at least 6 characters',
-      'string.max': 'Password cannot exceed 128 characters',
-    }),
+  password: strongPasswordSchema.required(),
 
   phone: Joi.string()
     .pattern(/^[6-9]\d{9}$/)
@@ -117,7 +120,7 @@ exports.registerSchema = Joi.object({
 /**
  * Validation schema for user login
  */
-exports.loginSchema = Joi.object({
+exports.customerLoginSchema = Joi.object({
   email: Joi.alternatives()
     .try(
       // Accept email format
@@ -131,6 +134,16 @@ exports.loginSchema = Joi.object({
       'alternatives.match': 'Please provide a valid email address or 10-digit phone number',
     }),
 
+  password: Joi.string().required().messages({
+    'string.empty': 'Password is required',
+  }),
+});
+
+exports.adminLoginSchema = Joi.object({
+  email: Joi.string().trim().lowercase().email().required().messages({
+    'string.empty': 'Email is required',
+    'string.email': 'Please provide a valid email address',
+  }),
   password: Joi.string().required().messages({
     'string.empty': 'Password is required',
   }),
@@ -157,15 +170,7 @@ exports.forgotPasswordSchema = Joi.object({
  * Validation schema for reset password
  */
 exports.resetPasswordSchema = Joi.object({
-  password: Joi.string()
-    .min(6)
-    .max(128)
-    .required()
-    .messages({
-      'string.empty': 'Password is required',
-      'string.min': 'Password must be at least 6 characters',
-      'string.max': 'Password cannot exceed 128 characters',
-    }),
+  password: strongPasswordSchema.required(),
 });
 
 /**
@@ -176,35 +181,9 @@ exports.changePasswordSchema = Joi.object({
     'string.empty': 'Current password is required',
   }),
 
-  newPassword: Joi.string()
-    .min(8)
-    .max(128)
-    .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
-    .required()
-    .invalid(Joi.ref('currentPassword'))
-    .messages({
-      'string.empty': 'New password is required',
-      'string.min': 'New password must be at least 8 characters',
-      'string.max': 'New password cannot exceed 128 characters',
-      'string.pattern.base':
-        'New password must contain at least one uppercase letter, one lowercase letter, one number, and one special character',
-      'any.invalid': 'New password must be different from current password',
-    }),
-});
-
-/**
- * Validation schema for verify phone OTP
- */
-exports.verifyPhoneSchema = Joi.object({
-  otp: Joi.string()
-    .length(6)
-    .pattern(/^\d{6}$/)
-    .required()
-    .messages({
-      'string.empty': 'OTP is required',
-      'string.length': 'OTP must be 6 digits',
-      'string.pattern.base': 'OTP must contain only numbers',
-    }),
+  newPassword: strongPasswordSchema.required().invalid(Joi.ref('currentPassword')).messages({
+    'any.invalid': 'New password must be different from current password',
+  }),
 });
 
 /**
@@ -313,15 +292,7 @@ exports.changePasswordSchema = Joi.object({
   currentPassword: Joi.string().required().messages({
     'string.empty': 'Current password is required',
   }),
-  newPassword: Joi.string()
-    .min(6)
-    .max(128)
-    .required()
-    .messages({
-      'string.empty': 'New password is required',
-      'string.min': 'New password must be at least 6 characters',
-      'string.max': 'New password cannot exceed 128 characters',
-    }),
+  newPassword: strongPasswordSchema.required(),
   confirmPassword: Joi.string()
     .valid(Joi.ref('newPassword'))
     .required()

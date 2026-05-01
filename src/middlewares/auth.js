@@ -14,7 +14,16 @@ const logger = require('../utils/logger');
  * 4. User is active
  * 5. User hasn't changed password after token was issued
  */
-exports.protect = catchAsync(async (req, res, next) => {
+exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) => {
+  if (process.env.NODE_ENV === 'development') {
+    logger.info(`[AUTH_DEBUG] protect start ${JSON.stringify({
+      url: req.originalUrl,
+      method: req.method,
+      requiredScope,
+      hasAuthorization: !!req.headers.authorization,
+    })}`);
+  }
+
   // 1) Get token from header
   let token;
   if (
@@ -22,6 +31,14 @@ exports.protect = catchAsync(async (req, res, next) => {
     req.headers.authorization.startsWith('Bearer')
   ) {
     token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (process.env.NODE_ENV === 'development') {
+    logger.info(`[AUTH_DEBUG] token extracted ${JSON.stringify({
+      url: req.originalUrl,
+      hasToken: !!token,
+      tokenPreview: token ? `${token.slice(0, 8)}...` : null,
+    })}`);
   }
 
   if (!token) {
@@ -46,8 +63,30 @@ exports.protect = catchAsync(async (req, res, next) => {
     return next(error);
   }
 
+  if (process.env.NODE_ENV === 'development') {
+    logger.info(`[AUTH_DEBUG] token verified ${JSON.stringify({
+      url: req.originalUrl,
+      userId: decoded.id,
+      scope: decoded.scope || null,
+    })}`);
+  }
+
+  if (requiredScope && decoded.scope && decoded.scope !== requiredScope) {
+    return next(new AppError('Invalid authentication scope.', 403));
+  }
+
   // 3) Check if user still exists
   const user = await User.findById(decoded.id).select('+isActive');
+
+  if (process.env.NODE_ENV === 'development') {
+    logger.info(`[AUTH_DEBUG] user lookup complete ${JSON.stringify({
+      url: req.originalUrl,
+      userFound: !!user,
+      role: user?.role || null,
+      isActive: user?.isActive,
+      isBlocked: user?.isBlocked,
+    })}`);
+  }
   if (!user) {
     return next(
       new AppError('The user belonging to this token no longer exists.', 401)
@@ -65,6 +104,10 @@ exports.protect = catchAsync(async (req, res, next) => {
     return next(
       new AppError('Your account has been blocked. Please contact support.', 403)
     );
+  }
+
+  if (requiredScope && user.role !== requiredScope) {
+    return next(new AppError('Invalid authentication scope.', 403));
   }
 
   // 5) Check if user changed password after token was issued

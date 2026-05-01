@@ -1,5 +1,43 @@
 const Order = require('../models/Order');
 const User = require('../models/User');
+const logger = require('../utils/logger');
+
+const isDev = process.env.NODE_ENV === 'development';
+
+const logDevTiming = (label, payload) => {
+  if (!isDev) {
+    return;
+  }
+
+  logger.info(`[DASHBOARD_DEBUG] ${label} ${JSON.stringify(payload)}`);
+};
+
+const timedQuery = async (label, fn, payload = {}) => {
+  const startedAt = Date.now();
+
+  try {
+    const result = await fn();
+
+    if (isDev) {
+      logDevTiming(`${label} success`, {
+        durationMs: Date.now() - startedAt,
+        ...payload,
+      });
+    }
+
+    return result;
+  } catch (error) {
+    if (isDev) {
+      logDevTiming(`${label} error`, {
+        durationMs: Date.now() - startedAt,
+        message: error.message,
+        ...payload,
+      });
+    }
+
+    throw error;
+  }
+};
 
 const VALID_ORDER_FILTER = {
   status: { $nin: ['CANCELLED', 'REJECTED', 'cancelled', 'rejected'] },
@@ -62,7 +100,7 @@ const pctChange = (current, previous) => {
 };
 
 const aggregateRevenueAndOrders = async (match) => {
-  const rows = await Order.aggregate([
+  const rows = await timedQuery('aggregateRevenueAndOrders', () => Order.aggregate([
     { $match: match },
     {
       $group: {
@@ -71,7 +109,10 @@ const aggregateRevenueAndOrders = async (match) => {
         orders: { $sum: 1 },
       },
     },
-  ]);
+  ]), {
+    hasCreatedAtRange: !!match.createdAt,
+    statusFilter: Array.isArray(match.status?.$nin) ? match.status.$nin.length : 0,
+  });
 
   return rows[0] || { revenue: 0, orders: 0 };
 };
@@ -82,7 +123,7 @@ const countValidOrders = async (extraMatch = {}) => Order.countDocuments({
 });
 
 const getOverallAovAndOrders = async () => {
-  const rows = await Order.aggregate([
+  const rows = await timedQuery('getOverallAovAndOrders', () => Order.aggregate([
     { $match: VALID_ORDER_FILTER },
     {
       $group: {
@@ -91,13 +132,13 @@ const getOverallAovAndOrders = async () => {
         totalOrders: { $sum: 1 },
       },
     },
-  ]);
+  ]));
 
   return rows[0] || { avgOrderValue: 0, totalOrders: 0 };
 };
 
 const getMonthlySalesForCurrentYear = async ({ startOfYear, now }) => {
-  const rows = await Order.aggregate([
+  const rows = await timedQuery('getMonthlySalesForCurrentYear', () => Order.aggregate([
     {
       $match: {
         ...VALID_ORDER_FILTER,
@@ -114,7 +155,9 @@ const getMonthlySalesForCurrentYear = async ({ startOfYear, now }) => {
       },
     },
     { $sort: { _id: 1 } },
-  ]);
+  ]), {
+    year: now.getFullYear(),
+  });
 
   const monthlySales = Array(12).fill(0);
   rows.forEach((item) => {
@@ -125,7 +168,7 @@ const getMonthlySalesForCurrentYear = async ({ startOfYear, now }) => {
 };
 
 const getHighestMonthlySaleEver = async () => {
-  const rows = await Order.aggregate([
+  const rows = await timedQuery('getHighestMonthlySaleEver', () => Order.aggregate([
     { $match: VALID_ORDER_FILTER },
     {
       $group: {
@@ -138,13 +181,13 @@ const getHighestMonthlySaleEver = async () => {
     },
     { $sort: { totalSales: -1 } },
     { $limit: 1 },
-  ]);
+  ]));
 
   return rows.length > 0 ? Math.round(rows[0].totalSales || 0) : 100000;
 };
 
 const getCurrentMonthRevenue = async ({ startOfMonth, now }) => {
-  const rows = await Order.aggregate([
+  const rows = await timedQuery('getCurrentMonthRevenue', () => Order.aggregate([
     {
       $match: {
         ...VALID_ORDER_FILTER,
@@ -160,17 +203,19 @@ const getCurrentMonthRevenue = async ({ startOfMonth, now }) => {
         totalSales: { $sum: '$pricing.finalAmount' },
       },
     },
-  ]);
+  ]));
 
   return rows.length > 0 ? Math.round(rows[0].totalSales || 0) : 0;
 };
 
 const getRecentOrders = async (limit = 5) => {
-  const rows = await Order.find(VALID_ORDER_FILTER)
+  const rows = await timedQuery('getRecentOrders', () => Order.find(VALID_ORDER_FILTER)
     .sort({ createdAt: -1 })
     .limit(limit)
     .select('orderNumber items pricing status')
-    .lean();
+    .lean(), {
+    limit,
+  });
 
   return rows.map((order) => {
     const firstItem = order.items[0];
@@ -187,7 +232,7 @@ const getRecentOrders = async (limit = 5) => {
 };
 
 const getYearlyTrend = async () => {
-  const rows = await Order.aggregate([
+  const rows = await timedQuery('getYearlyTrend', () => Order.aggregate([
     { $match: VALID_ORDER_FILTER },
     {
       $group: {
@@ -197,7 +242,7 @@ const getYearlyTrend = async () => {
       },
     },
     { $sort: { _id: 1 } },
-  ]);
+  ]));
 
   return rows.map((item) => ({
     label: String(item._id),
@@ -207,7 +252,7 @@ const getYearlyTrend = async () => {
 };
 
 const getMonthlyTrendByYear = async () => {
-  const rows = await Order.aggregate([
+  const rows = await timedQuery('getMonthlyTrendByYear', () => Order.aggregate([
     { $match: VALID_ORDER_FILTER },
     {
       $group: {
@@ -220,7 +265,7 @@ const getMonthlyTrendByYear = async () => {
       },
     },
     { $sort: { '_id.year': 1, '_id.month': 1 } },
-  ]);
+  ]));
 
   const monthlyTrendByYear = {};
 
@@ -247,9 +292,11 @@ const getMonthlyTrendByYear = async () => {
 };
 
 const buildDashboardStats = async ({ now, startOfMonth, startOfYear }) => {
+  const startedAt = Date.now();
+
   const [totalCustomers, totalOrders, recentOrders, monthlySales, monthlyTarget, currentMonthRevenue] = await Promise.all([
-    User.countDocuments({ role: 'customer', isActive: { $ne: false } }),
-    countValidOrders(),
+    timedQuery('countCustomers', () => User.countDocuments({ role: 'customer', isActive: { $ne: false } })),
+    timedQuery('countValidOrders', () => countValidOrders()),
     getRecentOrders(5),
     getMonthlySalesForCurrentYear({ startOfYear, now }),
     getHighestMonthlySaleEver(),
@@ -258,7 +305,7 @@ const buildDashboardStats = async ({ now, startOfMonth, startOfYear }) => {
 
   const progress = monthlyTarget > 0 ? Math.round((currentMonthRevenue / monthlyTarget) * 100) : 0;
 
-  return {
+  const result = {
     totalCustomers,
     totalOrders,
     recentOrders,
@@ -269,9 +316,22 @@ const buildDashboardStats = async ({ now, startOfMonth, startOfYear }) => {
       progress,
     },
   };
+
+  logDevTiming('buildDashboardStats', {
+    durationMs: Date.now() - startedAt,
+    totalCustomers,
+    totalOrders,
+    recentOrdersCount: recentOrders.length,
+    monthlyTarget,
+    currentMonthRevenue,
+  });
+
+  return result;
 };
 
 const buildBusinessInsights = async ({ now, startOfToday, startOfYesterday }) => {
+  const startedAt = Date.now();
+
   const [today, yesterday, overall, yearly, monthlyByYear] = await Promise.all([
     aggregateRevenueAndOrders({
       ...VALID_ORDER_FILTER,
@@ -286,7 +346,7 @@ const buildBusinessInsights = async ({ now, startOfToday, startOfYesterday }) =>
     getMonthlyTrendByYear(),
   ]);
 
-  return {
+  const result = {
     summary: {
       todayRevenue: Math.round(today.revenue || 0),
       todayOrders: today.orders || 0,
@@ -302,9 +362,19 @@ const buildBusinessInsights = async ({ now, startOfToday, startOfYesterday }) =>
       monthlyByYear,
     },
   };
+
+  logDevTiming('buildBusinessInsights', {
+    durationMs: Date.now() - startedAt,
+    todayOrders: today.orders || 0,
+    yearlyPoints: yearly.length,
+    monthlyYears: Object.keys(monthlyByYear || {}).length,
+  });
+
+  return result;
 };
 
 const buildDashboardBundle = async () => {
+  const startedAt = Date.now();
   const boundaries = getDateBoundaries();
 
   const [stats, insights] = await Promise.all([
@@ -312,10 +382,18 @@ const buildDashboardBundle = async () => {
     buildBusinessInsights(boundaries),
   ]);
 
-  return {
+  const result = {
     stats,
     insights,
   };
+
+  logDevTiming('buildDashboardBundle', {
+    durationMs: Date.now() - startedAt,
+    statsOrders: stats.totalOrders,
+    insightsTodayOrders: insights.summary.todayOrders,
+  });
+
+  return result;
 };
 
 module.exports = {

@@ -1,139 +1,169 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const authController = require('../controllers/auth.controller');
 const authMiddleware = require('../middlewares/auth');
 const authValidator = require('../validators/auth.validator');
+const { requireCsrf } = require('../middlewares/csrf');
 
 const router = express.Router();
 
-/**
- * Public routes - No authentication required
- */
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 'fail',
+    message: 'Too many login attempts. Please try again later.',
+  },
+});
 
-// Register new user
-router.post(
-  '/register',
-  authValidator.validate(authValidator.registerSchema),
-  authController.register
-);
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 'fail',
+    message: 'Too many registration attempts. Please try again later.',
+  },
+});
 
-// Login user
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 'fail',
+    message: 'Too many password reset requests. Please try again later.',
+  },
+});
+
+const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 'fail',
+    message: 'Too many refresh requests. Please try again later.',
+  },
+});
+
+const mountDeviceTokenRoutes = (scope) => {
+  router.post(
+    `/${scope}/device-token`,
+    authMiddleware.protect(scope),
+    requireCsrf(scope),
+    authController.registerDeviceToken
+  );
+
+  router.delete(
+    `/${scope}/device-token`,
+    authMiddleware.protect(scope),
+    requireCsrf(scope),
+    authController.removeDeviceToken
+  );
+};
+
+/* =====================================================
+   ADMIN AUTH ROUTES
+===================================================== */
 router.post(
-  '/login',
-  authValidator.validate(authValidator.loginSchema),
+  '/admin/login',
+  loginLimiter,
+  authValidator.validate(authValidator.adminLoginSchema),
   authController.login
 );
 
-// Refresh access token
 router.post(
-  '/refresh-token',
-  authValidator.validate(authValidator.refreshTokenSchema),
+  '/admin/refresh',
+  refreshLimiter,
+  requireCsrf('admin'),
   authController.refreshToken
 );
 
-// Forgot password - Request reset token
 router.post(
-  '/forgot-password',
-  authValidator.validate(authValidator.forgotPasswordSchema),
-  authController.forgotPassword
+  '/admin/logout',
+  authMiddleware.protect('admin'),
+  requireCsrf('admin'),
+  authController.logout
 );
 
-// Reset password with token
+router.get('/admin/me', authMiddleware.protect('admin'), authController.getMe);
+
 router.patch(
-  '/reset-password/:token',
-  authValidator.validate(authValidator.resetPasswordSchema),
-  authController.resetPassword
-);
-
-// Verify email with token (legacy - for URL-based verification)
-router.get('/verify-email/:token', authController.verifyEmail);
-
-// Verify email with OTP
-router.post('/verify-otp', authController.verifyOTP);
-
-// Resend OTP
-router.post('/resend-otp', authController.resendOTP);
-
-/**
- * Protected routes - Authentication required
- * All routes below this middleware require a valid JWT token
- */
-router.use(authMiddleware.protect);
-
-// Logout user
-router.post('/logout', authController.logout);
-
-// Get current user profile
-router.get('/me', authController.getMe);
-
-// Update current user profile
-router.patch(
-  '/me',
-  authValidator.validate(authValidator.updateProfileSchema),
-  authController.updateMe
-);
-
-// Deactivate current user account
-router.delete(
-  '/me',
-  authValidator.validate(authValidator.deleteAccountSchema),
-  authController.deleteMe
-);
-
-// Get user's frequently ordered items (customer only)
-router.get('/me/frequently-ordered', 
-  authMiddleware.restrictTo('customer'),
-  authController.getFrequentlyOrdered
-);
-
-// Get user's favorite items (customer only)
-router.get('/me/favorites',
-  authMiddleware.restrictTo('customer'),
-  require('../controllers/user.controller').getFavoriteItems
-);
-
-// Add item to favorites (customer only)
-router.post('/me/favorites/:menuItemId',
-  authMiddleware.restrictTo('customer'),
-  require('../controllers/user.controller').addFavoriteItem
-);
-
-// Remove item from favorites (customer only)
-// Register device token for push notifications
-router.post('/device-token', authController.registerDeviceToken);
-
-// Remove device token (on logout)
-router.delete('/device-token', authController.removeDeviceToken);
-
-// Remove item from favorites (customer only)
-router.delete('/me/favorites/:menuItemId',
-  authMiddleware.restrictTo('customer'),
-  require('../controllers/user.controller').removeFavoriteItem
-);
-
-// Change password
-router.patch(
-  '/change-password',
+  '/admin/change-password',
+  authMiddleware.protect('admin'),
   authValidator.validate(authValidator.changePasswordSchema),
   authController.changePassword
 );
 
-// Send email verification link
-router.post('/send-verification-email', authController.sendVerificationEmail);
+mountDeviceTokenRoutes('admin');
 
-// Send phone verification OTP
-router.post('/send-verification-sms', authController.sendVerificationSMS);
-
-// Verify phone with OTP
+/* =====================================================
+   CUSTOMER AUTH ROUTES
+===================================================== */
 router.post(
-  '/verify-phone',
-  authValidator.validate(authValidator.verifyPhoneSchema),
-  authController.verifyPhone
+  '/customer/register',
+  registerLimiter,
+  authValidator.validate(authValidator.registerSchema),
+  authController.register
 );
 
-// Register/Update device token for push notifications
-router.post('/device-token', authController.registerDeviceToken);
+router.post(
+  '/customer/login',
+  loginLimiter,
+  authValidator.validate(authValidator.customerLoginSchema),
+  authController.login
+);
 
-// Remove device token
-router.delete('/device-token', authController.removeDeviceToken);
+router.post(
+  '/customer/refresh',
+  refreshLimiter,
+  requireCsrf('customer'),
+  authController.refreshToken
+);
+
+router.post(
+  '/customer/logout',
+  authMiddleware.protect('customer'),
+  requireCsrf('customer'),
+  authController.logout
+);
+
+router.get('/customer/me', authMiddleware.protect('customer'), authController.getMe);
+
+router.patch(
+  '/customer/change-password',
+  authMiddleware.protect('customer'),
+  authValidator.validate(authValidator.changePasswordSchema),
+  authController.changePassword
+);
+
+router.post(
+  '/customer/forgot-password',
+  forgotPasswordLimiter,
+  authValidator.validate(authValidator.forgotPasswordSchema),
+  authController.forgotPassword
+);
+
+router.patch(
+  '/customer/reset-password/:token',
+  authValidator.validate(authValidator.resetPasswordSchema),
+  authController.resetPassword
+);
+
+router.get('/customer/verify-email/:token', authController.verifyEmail);
+router.post('/customer/send-verification-email', authMiddleware.protect('customer'), authController.sendVerificationEmail);
+
+mountDeviceTokenRoutes('customer');
+
+/* =====================================================
+   LEGACY COMPATIBILITY ROUTES
+===================================================== */
+router.get('/verify-email/:token', authController.verifyEmail);
+router.post('/send-verification-email', authMiddleware.protect('customer'), authController.sendVerificationEmail);
 
 module.exports = router;

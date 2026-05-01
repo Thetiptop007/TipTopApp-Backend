@@ -70,6 +70,16 @@ const connectDB = async () => {
 
       logger.info(`✅ MongoDB Connected: ${conn.connection.host}:${conn.connection.port}/${conn.connection.name}`);
 
+      if (process.env.NODE_ENV === 'development') {
+        mongoose.set('debug', (collectionName, method, query, doc) => {
+          try {
+            logger.info(`[MONGODB_DEBUG] ${collectionName}.${method} ${JSON.stringify(query)} ${doc ? JSON.stringify(doc) : ''}`);
+          } catch (err) {
+            logger.info(`[MONGODB_DEBUG] ${collectionName}.${method} (could not stringify query)`);
+          }
+        });
+      }
+
       // Connection event handlers - only log critical events
       let reconnectAttempts = 0;
 

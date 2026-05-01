@@ -5,7 +5,9 @@ const priceVariantSchema = new mongoose.Schema({
   quantity: {
     type: String,
     required: true,
-    enum: ['Quarter', 'Half', 'Full', '2PCS', '4PCS', '6PCS', '8PCS', '10PCS', '12PCS', '14PCS', '16PCS'],
+    trim: true,
+    maxlength: 12,
+    match: [ /^(?:(?:\d+\s*(?:pc|pcs))|quarter|half|full)$/i, 'Invalid quantity format' ],
   },
   price: {
     type: Number,

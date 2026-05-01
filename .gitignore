@@ -56,3 +56,5 @@ dump.rdb
 backuppublic/downloads/*.apk
 
 mongodb_backup/
+
+scripts

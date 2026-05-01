@@ -175,7 +175,6 @@ exports.createMenuItem = catchAsync(async (req, res, next) => {
     image,
     priceVariants,
     category, // Changed from categories to category (single value)
-    preparationTime,
     isAvailable
   } = req.body;
 
@@ -202,7 +201,6 @@ exports.createMenuItem = catchAsync(async (req, res, next) => {
     image: image || '/images/product/placeholder.jpg',
     priceVariants,
     categories: [category], // Store as array with single element
-    preparationTime: preparationTime || 15,
     isAvailable: isAvailable !== undefined ? isAvailable : true,
     isActive: true,
     rating: 4.0,
@@ -220,9 +218,6 @@ exports.createMenuItem = catchAsync(async (req, res, next) => {
         image: menuItem.image,
         priceVariants: menuItem.priceVariants,
         categories: menuItem.categories,
-        preparationTime: menuItem.preparationTime,
-        isVegetarian: menuItem.isVegetarian,
-        isSpicy: menuItem.isSpicy,
         isAvailable: menuItem.isAvailable,
         isActive: menuItem.isActive,
         rating: menuItem.rating,
@@ -239,7 +234,6 @@ exports.updateMenuItem = catchAsync(async (req, res, next) => {
     image,
     priceVariants,
     category, // Changed from categories to category (single value)
-    preparationTime,
     isAvailable,
     isActive
   } = req.body;
@@ -276,7 +270,6 @@ exports.updateMenuItem = catchAsync(async (req, res, next) => {
   if (image !== undefined) menuItem.image = image;
   if (priceVariants !== undefined) menuItem.priceVariants = priceVariants;
   if (category !== undefined) menuItem.categories = [category]; // Store as single-element array
-  if (preparationTime !== undefined) menuItem.preparationTime = preparationTime;
   if (isAvailable !== undefined) menuItem.isAvailable = isAvailable;
   if (isActive !== undefined) menuItem.isActive = isActive;
 
@@ -293,9 +286,6 @@ exports.updateMenuItem = catchAsync(async (req, res, next) => {
         image: menuItem.image,
         priceVariants: menuItem.priceVariants,
         categories: menuItem.categories,
-        preparationTime: menuItem.preparationTime,
-        isVegetarian: menuItem.isVegetarian,
-        isSpicy: menuItem.isSpicy,
         isAvailable: menuItem.isAvailable,
         isActive: menuItem.isActive,
         rating: menuItem.rating,
@@ -344,8 +334,7 @@ exports.getPublicMenu = catchAsync(async (req, res, next) => {
       price: lowestPrice,
       priceVariants: itemObj.priceVariants || [],
       rating: itemObj.rating || 0,
-      reviews: itemObj.reviews || 0,
-      preparationTime: itemObj.preparationTime || 15
+      reviews: itemObj.reviews || 0
     };
   });
 
@@ -388,10 +377,7 @@ exports.getPublicMenuItem = catchAsync(async (req, res, next) => {
     price: lowestPrice,
     priceVariants: item.priceVariants || [],
     rating: item.rating || 0,
-    reviews: item.reviews || 0,
-    preparationTime: item.preparationTime || 15,
-    isVegetarian: item.isVegetarian || false,
-    isSpicy: item.isSpicy || false
+    reviews: item.reviews || 0
   };
 
   res.status(200).json({
@@ -446,7 +432,7 @@ exports.getAllMenuForCache = catchAsync(async (req, res, next) => {
   const safeLimit = Math.min(Math.max(requestedLimit, 1), 300);
 
   const menuItems = await MenuItem.find({ isActive: true, isAvailable: true })
-    .select('_id name slug description image categories priceVariants rating reviews isAvailable isActive preparationTime createdAt updatedAt')
+    .select('_id name slug description image categories priceVariants rating reviews isAvailable isActive createdAt updatedAt')
     .sort({ name: 1 })
     .limit(safeLimit)
     .lean();
@@ -572,9 +558,6 @@ exports.getMenuStats = catchAsync(async (req, res, next) => {
         totalItems: { $sum: 1 },
         availableItems: {
           $sum: { $cond: ['$isAvailable', 1, 0] },
-        },
-        vegetarianItems: {
-          $sum: { $cond: ['$isVegetarian', 1, 0] },
         },
         avgPrice: { $avg: '$price' },
         totalOrders: { $sum: '$stats.totalOrders' },

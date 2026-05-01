@@ -25,10 +25,12 @@ exports.createMenuItemSchema = Joi.object({
     .items(
       Joi.object({
         quantity: Joi.string()
-          .valid('Quarter', 'Half', 'Full', '2PCS', '4PCS', '8PCS', '16PCS')
+          .trim()
+          .max(12)
+          .pattern(/^(?:(?:\d+\s*(?:pc|pcs))|quarter|half|full)$/i)
           .required()
           .messages({
-            'any.only': 'Quantity must be Quarter, Half, Full, 2PCS, 4PCS, 8PCS, or 16PCS',
+            'string.pattern.base': 'Quantity must be a valid plate/pc value (e.g. 1PC, 3 PC, Quarter, Half, Full)',
             'any.required': 'Quantity is required for price variant'
           }),
         price: Joi.number().min(0).required().messages({
@@ -89,14 +91,6 @@ exports.createMenuItemSchema = Joi.object({
     .messages({
       'any.only': 'Plate quantity must be Full, Half, or Quarter',
     }),
-
-  isVegetarian: Joi.boolean(),
-
-  prepTime: Joi.number().integer().min(1).max(180).messages({
-    'number.base': 'Preparation time must be a number',
-    'number.min': 'Preparation time must be at least 1 minute',
-    'number.max': 'Preparation time cannot exceed 180 minutes',
-  }),
 
   spiceLevel: Joi.string()
     .valid('mild', 'medium', 'hot', 'extra-hot')
@@ -196,10 +190,12 @@ exports.updateMenuItemSchema = Joi.object({
     .items(
       Joi.object({
         quantity: Joi.string()
-          .valid('Quarter', 'Half', 'Full', '2PCS', '4PCS', '8PCS', '16PCS')
+          .trim()
+          .max(12)
+          .pattern(/^(?:(?:\d+\s*(?:pc|pcs))|quarter|half|full)$/i)
           .required()
           .messages({
-            'any.only': 'Quantity must be Quarter, Half, Full, 2PCS, 4PCS, 8PCS, or 16PCS',
+            'string.pattern.base': 'Quantity must be a valid plate/pc value (e.g. 1PC, 3 PC, Quarter, Half, Full)',
           }),
         price: Joi.number().min(0).required().messages({
           'number.base': 'Price must be a number',
@@ -255,13 +251,6 @@ exports.updateMenuItemSchema = Joi.object({
     .messages({
       'any.only': 'Plate quantity must be Full, Half, or Quarter',
     }),
-
-  isVegetarian: Joi.boolean(),
-
-  prepTime: Joi.number().integer().min(1).max(180).messages({
-    'number.min': 'Preparation time must be at least 1 minute',
-    'number.max': 'Preparation time cannot exceed 180 minutes',
-  }),
 
   spiceLevel: Joi.string()
     .valid('mild', 'medium', 'hot', 'extra-hot')
@@ -358,7 +347,6 @@ exports.menuQuerySchema = Joi.object({
 
   // Filtering
   category: Joi.string(),
-  isVegetarian: Joi.boolean(),
   isAvailable: Joi.boolean(),
   spiceLevel: Joi.string().valid('mild', 'medium', 'hot', 'extra-hot'),
   plateQuantity: Joi.string().valid('Full', 'Half', 'Quarter'),
@@ -372,10 +360,6 @@ exports.menuQuerySchema = Joi.object({
   // Rating range
   'rating[gte]': Joi.number().min(0).max(5),
   'rating[lte]': Joi.number().min(0).max(5),
-
-  // Prep time range
-  'prepTime[lte]': Joi.number().min(0),
-  'prepTime[gte]': Joi.number().min(0),
 
   // Dietary tags
   dietaryTags: Joi.string(), // Can be comma-separated

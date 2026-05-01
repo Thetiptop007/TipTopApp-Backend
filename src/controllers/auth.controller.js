@@ -8,9 +8,14 @@ const logger = require('../utils/logger');
 const notificationService = require('../services/notification.service');
 
 const getAuthScope = (req, user = null) => {
-  const scope = String(req.headers['x-auth-scope'] || '').toLowerCase();
-  if (scope === 'admin' || scope === 'customer') {
-    return scope;
+  const route = String(req.originalUrl || req.baseUrl || req.path || '').toLowerCase();
+
+  if (route.includes('/auth/admin/')) {
+    return 'admin';
+  }
+
+  if (route.includes('/auth/customer/')) {
+    return 'customer';
   }
 
   if (user) {
@@ -25,7 +30,14 @@ const getRefreshCookieName = (scope) => (scope === 'admin' ? 'adminRefreshToken'
 const getRefreshCookieOptions = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
+  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  path: '/',
+});
+
+const getLegacyRefreshCookieOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
   path: '/api/v1/auth',
 });
 
@@ -50,6 +62,7 @@ const parseRefreshTokenExpiryMs = () => {
 };
 
 const setRefreshCookie = (res, scope, token) => {
+  res.clearCookie(getRefreshCookieName(scope), getLegacyRefreshCookieOptions());
   res.cookie(getRefreshCookieName(scope), token, {
     ...getRefreshCookieOptions(),
     maxAge: parseRefreshTokenExpiryMs(),
@@ -58,15 +71,64 @@ const setRefreshCookie = (res, scope, token) => {
 
 const clearRefreshCookie = (res, scope) => {
   res.clearCookie(getRefreshCookieName(scope), getRefreshCookieOptions());
+  res.clearCookie(getRefreshCookieName(scope), getLegacyRefreshCookieOptions());
+};
+
+const getCsrfCookieName = (scope) => `${scope}CsrfToken`;
+
+const getCsrfCookieOptions = () => ({
+  httpOnly: false,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  path: '/',
+});
+
+const getLegacyCsrfCookieOptions = () => ({
+  httpOnly: false,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  path: '/api/v1/auth',
+});
+
+const setCsrfCookie = (res, scope) => {
+  const token = crypto.randomBytes(32).toString('hex');
+  res.clearCookie(getCsrfCookieName(scope), getLegacyCsrfCookieOptions());
+  res.cookie(getCsrfCookieName(scope), token, {
+    ...getCsrfCookieOptions(),
+    maxAge: 24 * 60 * 60 * 1000,
+  });
+  return token;
+};
+
+const clearCsrfCookie = (res, scope) => {
+  res.clearCookie(getCsrfCookieName(scope), getCsrfCookieOptions());
+  res.clearCookie(getCsrfCookieName(scope), getLegacyCsrfCookieOptions());
+};
+
+const buildAuthResponse = ({ user, message, statusCode, scope, accessToken, res }) => {
+  const csrfToken = setCsrfCookie(res, scope);
+
+  return res.status(statusCode).json({
+    status: 'success',
+    message,
+    data: {
+      user,
+      tokens: {
+        accessToken,
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+      },
+      csrfToken,
+    },
+  });
 };
 
 /**
  * Generate JWT tokens and send response
  */
 const createSendToken = async (user, statusCode, res, message = 'Success') => {
-  const accessToken = user.generateAuthToken();
-  const refreshToken = user.generateRefreshToken();
   const scope = user.role === 'admin' ? 'admin' : 'customer';
+  const accessToken = user.generateAuthToken(scope);
+  const refreshToken = user.generateRefreshToken(scope);
 
   await user.storeRefreshSession(scope, refreshToken);
   // Update last login
@@ -77,16 +139,13 @@ const createSendToken = async (user, statusCode, res, message = 'Success') => {
   user.password = undefined;
   user.refreshToken = undefined;
 
-  res.status(statusCode).json({
-    status: 'success',
+  buildAuthResponse({
+    user,
     message,
-    data: {
-      user,
-      tokens: {
-        accessToken,
-        expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-      },
-    },
+    statusCode,
+    scope,
+    accessToken,
+    res,
   });
 };
 
@@ -110,7 +169,12 @@ exports.registerDeviceToken = catchAsync(async (req, res, next) => {
   // Add device token to user
   await req.user.addDeviceToken(token, platform, deviceId);
 
-  logger.info(`Device token registered for user ${req.user.email.address} on ${platform}`);
+  logger.info('Device token registered', {
+    userId: req.user._id.toString(),
+    role: req.user.role,
+    platform,
+    ip: req.ip,
+  });
 
   res.status(200).json({
     status: 'success',
@@ -136,11 +200,18 @@ exports.removeDeviceToken = catchAsync(async (req, res, next) => {
   // Remove device token from user
   await req.user.removeDeviceToken(token);
 
-  logger.info(`Device token removed for user ${req.user.email.address}`);
+  logger.info('Device token removed', {
+    userId: req.user._id.toString(),
+    role: req.user.role,
+    ip: req.ip,
+  });
 
   res.status(200).json({
     status: 'success',
     message: 'Device token removed successfully',
+    data: {
+      user: null,
+    },
   });
 });
 
@@ -149,6 +220,12 @@ exports.removeDeviceToken = catchAsync(async (req, res, next) => {
  * POST /api/v1/auth/register
  */
 exports.register = catchAsync(async (req, res, next) => {
+  const scope = getAuthScope(req);
+
+  if (scope !== 'customer') {
+    return next(new AppError('Registration is only available for customer accounts.', 403));
+  }
+
   const {
     name,
     email,
@@ -162,7 +239,11 @@ exports.register = catchAsync(async (req, res, next) => {
   // Do NOT trust client-supplied `role` or `roles` fields.
   const role = 'customer';
 
-  logger.info(`[REGISTER] Attempt for email: ${email}, phone: ${phone}`);
+  logger.info('Registration attempt', {
+    scope,
+    ip: req.ip,
+    userAgent: req.get('user-agent') || 'unknown',
+  });
 
   // Generate email from phone if not provided
   const userEmail = email || `${phone.replace(/[^\d]/g, '')}@tiptop.app`;
@@ -205,12 +286,12 @@ exports.register = catchAsync(async (req, res, next) => {
     },
     email: {
       address: userEmail,
-      isVerified: false,
+      isVerified: true,
     },
     password,
     phone: {
       number: phone,
-      isVerified: false,
+      isVerified: true,
     },
     roles: [role],
     role,
@@ -227,15 +308,16 @@ exports.register = catchAsync(async (req, res, next) => {
 
   const user = await User.create(userData);
 
-  logger.info(`[REGISTER] SUCCESS - New user created: ${user.email.address} (ID: ${user._id}, Role: ${user.role})`);
-
-  // Set user as verified by default (OTP disabled for now)
-  user.email.isVerified = true;
-  user.phone.isVerified = true;
   await user.save({ validateBeforeSave: false });
 
-  // Authenticate user immediately after registration
-  await createSendToken(user, 201, res, 'Account created successfully! You are now logged in.');
+  logger.info('Registration completed', {
+    userId: user._id.toString(),
+    role: user.role,
+    ip: req.ip,
+    userAgent: req.get('user-agent') || 'unknown',
+  });
+
+  await createSendToken(user, 201, res, 'Account created successfully.');
 });
 
 /**
@@ -243,15 +325,22 @@ exports.register = catchAsync(async (req, res, next) => {
  * POST /api/v1/auth/login
  */
 exports.login = catchAsync(async (req, res, next) => {
+  const scope = getAuthScope(req);
   const { email, password } = req.body;
 
-  logger.info(`\n========== LOGIN ATTEMPT ==========`);
-  logger.info(`[LOGIN] Identifier provided: ${email}`);
-  logger.info(`[LOGIN] Password length: ${password ? password.length : 0}`);
+  logger.info('Login attempt', {
+    scope,
+    ip: req.ip,
+    userAgent: req.get('user-agent') || 'unknown',
+  });
 
   // 1) Check if email/phone and password exist
   if (!email || !password) {
-    logger.warn('[LOGIN] Failed - Missing credentials');
+    logger.warn('Login failed - missing credentials', {
+      scope,
+      ip: req.ip,
+      userAgent: req.get('user-agent') || 'unknown',
+    });
     return next(new AppError('Please provide email/phone and password.', 400));
   }
 
@@ -260,13 +349,9 @@ exports.login = catchAsync(async (req, res, next) => {
   
   // If it looks like a phone number, use only 10 digits
   if (/^(\+91)?[6-9]\d{9}$/.test(email)) {
-    // Remove +91 if present to get 10 digit number
     searchIdentifier = email.replace(/^\+91/, '');
-    logger.info(`[LOGIN] Phone number detected: ${searchIdentifier}`);
   }
-  
-  logger.info(`[LOGIN] Searching for user with email OR phone: ${searchIdentifier}`);
-  
+
   const user = await User.findOne({
     $or: [
       { 'email.address': email },
@@ -274,46 +359,42 @@ exports.login = catchAsync(async (req, res, next) => {
     ],
   }).select('+password +isActive');
 
-  logger.info(`[LOGIN] User found: ${user ? 'YES' : 'NO'}`);
-  
-  if (user) {
-    logger.info(`[LOGIN] User details:`);
-    logger.info(`  - ID: ${user._id}`);
-    logger.info(`  - Name: ${user.name.first} ${user.name.last}`);
-    logger.info(`  - Email: ${user.email.address}`);
-    logger.info(`  - Phone: ${user.phone.number}`);
-    logger.info(`  - Role: ${user.role}`);
-    logger.info(`  - Active: ${user.isActive}`);
-    logger.info(`  - Has Password: ${user.password ? 'YES' : 'NO'}`);
-    
-    // Test password comparison
-    const passwordMatch = await user.comparePassword(password);
-    logger.info(`  - Password Match: ${passwordMatch ? 'YES' : 'NO'}`);
-  } else {
-    logger.warn(`[LOGIN] No user found with identifier: ${email}`);
-    logger.warn(`[LOGIN] Tried to match:`);
-    logger.warn(`  - email.address: ${email}`);
-    logger.warn(`  - phone.number: ${searchIdentifier}`);
-  }
-
   // 3) Check if user exists and password is correct
   if (!user || !(await user.comparePassword(password))) {
-    logger.warn(`[LOGIN] Failed - Incorrect credentials for: ${email}`);
-    logger.info(`========================================\n`);
+    logger.warn('Login failed - invalid credentials', {
+      scope,
+      ip: req.ip,
+      userAgent: req.get('user-agent') || 'unknown',
+    });
     return next(new AppError('Incorrect email/phone or password.', 401));
   }
 
+  if (scope === 'admin' && user.role !== 'admin') {
+    return next(new AppError('Access denied. Admin privileges required.', 403));
+  }
+
+  if (scope === 'customer' && user.role !== 'customer') {
+    return next(new AppError('Access denied. Customer account required.', 403));
+  }
+
   if (user.isBlocked) {
-    logger.warn(`[LOGIN] Failed - Blocked user attempted login: ${user.email.address}`);
-    logger.info(`========================================\n`);
+    logger.warn('Login blocked - user is blocked', {
+      userId: user._id.toString(),
+      role: user.role,
+      scope,
+    });
     return next(new AppError('Your account has been blocked. Please contact support.', 403));
   }
 
-  logger.info(`[LOGIN] SUCCESS - User logged in: ${user.email.address} (ID: ${user._id}, Role: ${user.role})`);
-  logger.info(`========================================\n`);
+  logger.info('Login success', {
+    userId: user._id.toString(),
+    role: user.role,
+    scope,
+    ip: req.ip,
+    userAgent: req.get('user-agent') || 'unknown',
+  });
 
-  // Send token (verification check and isActive check removed)
-  createSendToken(user, 200, res, 'Login successful!');
+  await createSendToken(user, 200, res, 'Login successful!');
 });
 
 /**
@@ -321,7 +402,6 @@ exports.login = catchAsync(async (req, res, next) => {
  * GET /api/v1/auth/me
  */
 exports.getMe = catchAsync(async (req, res, next) => {
-  // req.user is set by the protect middleware
   const user = await User.findById(req.user._id);
 
   if (!user) {
@@ -330,7 +410,10 @@ exports.getMe = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: 'success',
-    user,
+    message: 'Current user loaded successfully.',
+    data: {
+      user,
+    },
   });
 });
 
@@ -346,12 +429,22 @@ exports.logout = catchAsync(async (req, res, next) => {
   }
 
   clearRefreshCookie(res, scope);
+  clearCsrfCookie(res, scope);
 
-  logger.info(`User logged out: ${req.user.email.address}`);
+  logger.info('Logout success', {
+    userId: req.user?._id?.toString(),
+    role: req.user?.role,
+    scope,
+    ip: req.ip,
+    userAgent: req.get('user-agent') || 'unknown',
+  });
 
   res.status(200).json({
     status: 'success',
     message: 'Logged out successfully.',
+    data: {
+      user: null,
+    },
   });
 });
 
@@ -387,6 +480,12 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     return next(error);
   }
 
+  if (decoded.scope && decoded.scope !== scope) {
+    clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    return next(new AppError('Invalid refresh token scope.', 401));
+  }
+
   // Check if user still exists
   const user = await User.findById(decoded.id).select('+isActive');
   if (!user) {
@@ -398,6 +497,14 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     return next(new AppError('Your account has been deactivated.', 401));
   }
 
+  if (scope === 'admin' && user.role !== 'admin') {
+    return next(new AppError('Invalid refresh token scope.', 401));
+  }
+
+  if (scope === 'customer' && user.role !== 'customer') {
+    return next(new AppError('Invalid refresh token scope.', 401));
+  }
+
   const tokenMatchesSession = await user.verifyRefreshSession(scope, refreshToken);
   if (!tokenMatchesSession) {
     clearRefreshCookie(res, scope);
@@ -405,20 +512,31 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
   }
 
   // Generate new access token
-  const newAccessToken = user.generateAuthToken();
-  const newRefreshToken = user.generateRefreshToken();
+  const newAccessToken = user.generateAuthToken(scope);
+  const newRefreshToken = user.generateRefreshToken(scope);
 
   await user.storeRefreshSession(scope, newRefreshToken);
   setRefreshCookie(res, scope, newRefreshToken);
+  const csrfToken = setCsrfCookie(res, scope);
 
-  logger.info(`Access token refreshed for user: ${user.email.address}`);
+  logger.info('Token refresh success', {
+    userId: user._id.toString(),
+    role: user.role,
+    scope,
+    ip: req.ip,
+    userAgent: req.get('user-agent') || 'unknown',
+  });
 
   res.status(200).json({
     status: 'success',
     message: 'Token refreshed successfully.',
     data: {
-      accessToken: newAccessToken,
-      expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+      user,
+      tokens: {
+        accessToken: newAccessToken,
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+      },
+      csrfToken,
     },
   });
 });
@@ -442,6 +560,9 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
       status: 'success',
       message:
         'If your email is registered, you will receive a password reset link.',
+      data: {
+        user: null,
+      },
     });
   }
 
@@ -467,6 +588,9 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
     status: 'success',
     message:
       'If your email is registered, you will receive a password reset link.',
+    data: {
+      user: null,
+    },
     // Remove in production - only for development
     ...(process.env.NODE_ENV === 'development' && { resetToken }),
   });
@@ -573,6 +697,9 @@ exports.verifyEmail = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     message: 'Email verified successfully!',
+    data: {
+      user,
+    },
   });
 });
 
@@ -604,73 +731,11 @@ exports.sendVerificationEmail = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     message: 'Verification email sent!',
+    data: {
+      user: req.user,
+    },
     // Remove in production - only for development
     ...(process.env.NODE_ENV === 'development' && { verificationToken }),
-  });
-});
-
-/**
- * Verify phone with OTP
- * POST /api/v1/auth/verify-phone
- */
-exports.verifyPhone = catchAsync(async (req, res, next) => {
-  const { otp } = req.body;
-
-  if (!otp) {
-    return next(new AppError('Please provide the OTP.', 400));
-  }
-
-  const user = await User.findById(req.user._id);
-
-  // Check if OTP matches and is not expired
-  if (
-    !user.phone.verificationCode ||
-    user.phone.verificationCode !== otp ||
-    user.phone.verificationExpires < Date.now()
-  ) {
-    return next(new AppError('Invalid or expired OTP.', 400));
-  }
-
-  // Mark phone as verified
-  user.phone.isVerified = true;
-  user.phone.verificationCode = undefined;
-  user.phone.verificationExpires = undefined;
-  await user.save({ validateBeforeSave: false });
-
-  logger.info(`Phone verified for: ${user.email.address}`);
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Phone verified successfully!',
-  });
-});
-
-/**
- * Send phone verification OTP
- * POST /api/v1/auth/send-verification-sms
- */
-exports.sendVerificationSMS = catchAsync(async (req, res, next) => {
-  const user = await User.findById(req.user._id);
-
-  if (user.phone.isVerified) {
-    return next(new AppError('Phone is already verified.', 400));
-  }
-
-  // Generate OTP
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-  user.phone.verificationCode = otp;
-  user.phone.verificationExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-  await user.save({ validateBeforeSave: false });
-
-  // TODO: Send OTP via SMS
-  logger.info(`OTP for ${user.phone.number}: ${otp}`);
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Verification OTP sent to your phone!',
-    // Remove in production - only for development
-    ...(process.env.NODE_ENV === 'development' && { otp }),
   });
 });
 
@@ -742,105 +807,6 @@ exports.updateMe = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * Verify Email with OTP
- * POST /api/v1/auth/verify-otp
- * Public access
- */
-exports.verifyOTP = catchAsync(async (req, res, next) => {
-  const { email, otp } = req.body;
-
-  logger.info(`[VERIFY-OTP] Attempt for email: ${email}`);
-
-  if (!email || !otp) {
-    logger.warn('[VERIFY-OTP] Failed - Missing email or OTP');
-    return next(new AppError('Please provide email and OTP.', 400));
-  }
-
-  // Hash the provided OTP
-  const hashedOTP = crypto.createHash('sha256').update(otp).digest('hex');
-
-  // Find user with matching email, OTP, and non-expired token
-  const user = await User.findOne({
-    'email.address': email,
-    emailVerificationToken: hashedOTP,
-    emailVerificationExpires: { $gt: Date.now() },
-  });
-
-  if (!user) {
-    logger.warn(`[VERIFY-OTP] Failed - Invalid or expired OTP for email: ${email}`);
-    return next(new AppError('Invalid or expired OTP. Please request a new one.', 400));
-  }
-
-  // Mark email as verified
-  user.email.isVerified = true;
-  user.emailVerificationToken = undefined;
-  user.emailVerificationExpires = undefined;
-  await user.save({ validateBeforeSave: false });
-
-  logger.info(`[VERIFY-OTP] SUCCESS - Email verified for: ${user.email.address} (ID: ${user._id})`);
-
-  // Auto-login user after verification
-  createSendToken(
-    user,
-    200,
-    res,
-    'Email verified successfully! You are now logged in.'
-  );
-});
-
-/**
- * Resend OTP
- * POST /api/v1/auth/resend-otp
- * Public access
- */
-exports.resendOTP = catchAsync(async (req, res, next) => {
-  const { email } = req.body;
-
-  logger.info(`[RESEND-OTP] Request for email: ${email}`);
-
-  if (!email) {
-    logger.warn('[RESEND-OTP] Failed - Missing email');
-    return next(new AppError('Please provide email.', 400));
-  }
-
-  // Find user
-  const user = await User.findOne({ 'email.address': email });
-
-  if (!user) {
-    logger.warn(`[RESEND-OTP] Failed - No account found for email: ${email}`);
-    return next(new AppError('No account found with this email.', 404));
-  }
-
-  // Check if already verified
-  if (user.email.isVerified) {
-    logger.warn(`[RESEND-OTP] Failed - Email already verified: ${email}`);
-    return next(new AppError('Email is already verified. You can login now.', 400));
-  }
-
-  // Generate new 6-digit OTP
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const hashedOTP = crypto.createHash('sha256').update(otp).digest('hex');
-
-  // Update user with new OTP
-  user.emailVerificationToken = hashedOTP;
-  user.emailVerificationExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-  await user.save({ validateBeforeSave: false });
-
-  logger.info(`[RESEND-OTP] SUCCESS - OTP regenerated for: ${user.email.address} (ID: ${user._id})`);
-  logger.info(`[RESEND-OTP] OTP for ${user.email.address}: ${otp} (Emails disabled - check logs)`);
-
-  // Return response immediately
-  res.status(200).json({
-    status: 'success',
-    message: 'New OTP generated! (Check server logs for development)',
-    data: {
-      otpSent: false,
-      expiresIn: '10 minutes',
-      ...(process.env.NODE_ENV === 'development' && { otp }), // Only in development
-    },
-  });
-});
 
 /**
  * Get user's frequently ordered items

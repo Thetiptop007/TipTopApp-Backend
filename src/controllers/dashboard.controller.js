@@ -31,6 +31,10 @@ const getOrBuildDashboardBundle = async () => {
     return { bundle: cachedFull, fromFullCache: true };
   }
 
+  if (process.env.NODE_ENV === 'development') {
+    logger.info('[DASHBOARD_DEBUG] getOrBuildDashboardBundle - cache miss, building bundle');
+  }
+
   const bundle = await buildDashboardBundle();
   await setDashboardBundleCache(bundle);
 
@@ -43,6 +47,12 @@ const getOrBuildDashboardBundle = async () => {
  * @access  Private/Admin
  */
 exports.getDashboardStats = catchAsync(async (req, res, next) => {
+  const startedAt = Date.now();
+
+  if (process.env.NODE_ENV === 'development') {
+    logger.info(`[DASHBOARD_DEBUG] dashboard/stats entry - user:${req.user?.email || req.user?._id || 'unknown'}`);
+  }
+
   const cachedStats = await cache.get(DASHBOARD_CACHE_KEYS.stats);
 
   if (cachedStats) {
@@ -71,6 +81,16 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
     recentOrdersCount: bundle.stats.recentOrders?.length || 0,
   });
 
+  if (process.env.NODE_ENV === 'development') {
+    logger.info(`[DASHBOARD_DEBUG] dashboard/stats response ${JSON.stringify({
+      cache: false,
+      fullCacheUsed: fromFullCache,
+      durationMs: Date.now() - startedAt,
+      totalCustomers: bundle.stats.totalCustomers,
+      totalOrders: bundle.stats.totalOrders,
+    })}`);
+  }
+
   return res.status(200).json({
     status: 'success',
     data: bundle.stats,
@@ -83,6 +103,7 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
  * @access  Private/Admin
  */
 exports.getBusinessInsights = catchAsync(async (req, res, next) => {
+  const startedAt = Date.now();
   const cached = await cache.get(DASHBOARD_CACHE_KEYS.insights);
 
   if (cached) {
@@ -110,6 +131,15 @@ exports.getBusinessInsights = catchAsync(async (req, res, next) => {
     monthlyYears: Object.keys(bundle.insights.trends?.monthlyByYear || {}),
   });
 
+  if (process.env.NODE_ENV === 'development') {
+    logger.info(`[DASHBOARD_DEBUG] dashboard/business-insights response ${JSON.stringify({
+      cache: false,
+      fullCacheUsed: fromFullCache,
+      durationMs: Date.now() - startedAt,
+      todayOrders: bundle.insights.summary.todayOrders,
+    })}`);
+  }
+
   return res.status(200).json({
     status: 'success',
     data: bundle.insights,
@@ -123,6 +153,7 @@ exports.getBusinessInsights = catchAsync(async (req, res, next) => {
  * @access  Private/Admin
  */
 exports.getDashboardFull = catchAsync(async (req, res, next) => {
+  const startedAt = Date.now();
   const cachedFull = await cache.get(DASHBOARD_CACHE_KEYS.full);
 
   if (cachedFull) {
@@ -147,6 +178,15 @@ exports.getDashboardFull = catchAsync(async (req, res, next) => {
     totalOrders: bundle.stats.totalOrders,
     todayOrders: bundle.insights.summary.todayOrders,
   });
+
+  if (process.env.NODE_ENV === 'development') {
+    logger.info(`[DASHBOARD_DEBUG] dashboard/full response ${JSON.stringify({
+      cache: false,
+      durationMs: Date.now() - startedAt,
+      totalOrders: bundle.stats.totalOrders,
+      todayOrders: bundle.insights.summary.todayOrders,
+    })}`);
+  }
 
   return res.status(200).json({
     status: 'success',

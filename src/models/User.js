@@ -63,7 +63,7 @@ const userSchema = new mongoose.Schema(
       },
       isVerified: {
         type: Boolean,
-        default: true,
+        default: false,
       },
     },
     phone: {
@@ -74,7 +74,7 @@ const userSchema = new mongoose.Schema(
       },
       isVerified: {
         type: Boolean,
-        default: true,
+        default: false,
       },
       verificationCode: String,
       verificationExpires: Date,
@@ -82,7 +82,7 @@ const userSchema = new mongoose.Schema(
     password: {
       type: String,
       required: [true, 'Password is required'],
-      minlength: [6, 'Password must be at least 6 characters'],
+      minlength: [8, 'Password must be at least 8 characters'],
       select: false,
     },
     roles: {
@@ -408,8 +408,19 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 };
 
 // Generate JWT token
-userSchema.methods.generateAuthToken = function () {
-  return jwt.sign({ id: this._id, role: this.role, roles: this.roles }, process.env.JWT_SECRET, {
+const parseJwtExpirySeconds = (rawValue) => {
+  const raw = String(rawValue || '7d').trim();
+  const match = raw.match(/^(\d+)([smhd])$/i);
+
+  if (!match) {
+    return raw;
+  }
+
+  return raw;
+};
+
+userSchema.methods.generateAuthToken = function (scope = this.getRefreshScope()) {
+  return jwt.sign({ id: this._id, role: this.role, roles: this.roles, scope, tokenType: 'access' }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE,
   });
 };
@@ -438,8 +449,8 @@ userSchema.methods.removeRole = function (role) {
 };
 
 // Generate refresh token
-userSchema.methods.generateRefreshToken = function () {
-  return jwt.sign({ id: this._id, role: this.role }, process.env.JWT_REFRESH_SECRET, {
+userSchema.methods.generateRefreshToken = function (scope = this.getRefreshScope()) {
+  return jwt.sign({ id: this._id, role: this.role, scope, tokenType: 'refresh' }, process.env.JWT_REFRESH_SECRET, {
     expiresIn: process.env.JWT_REFRESH_EXPIRE,
   });
 };
@@ -450,8 +461,15 @@ userSchema.methods.getRefreshScope = function () {
 
 userSchema.methods.storeRefreshSession = async function (scope, refreshToken) {
   const tokenHash = bcrypt.hashSync(refreshToken, 12);
-  const expiresIn = process.env.JWT_REFRESH_EXPIRE || '7d';
-  const expiresAt = new Date(Date.now() + (Number.parseInt(expiresIn, 10) || 7) * 24 * 60 * 60 * 1000);
+  const expiresIn = String(process.env.JWT_REFRESH_EXPIRE || '7d').trim();
+  const match = expiresIn.match(/^(\d+)([smhd])$/i);
+  const unitMs = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+  const expiresAt = new Date(Date.now() + (match ? Number(match[1]) * unitMs[match[2].toLowerCase()] : 7 * 24 * 60 * 60 * 1000));
 
   this.authSessions = this.authSessions || {};
   this.authSessions[scope] = {
