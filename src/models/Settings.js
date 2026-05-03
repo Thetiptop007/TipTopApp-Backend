@@ -115,20 +115,6 @@ const settingsSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // Admin Personal Information
-    adminProfile: {
-      firstName: {
-        type: String,
-        default: '',
-        trim: true,
-      },
-      lastName: {
-        type: String,
-        default: '',
-        trim: true,
-      },
-    },
-
     // Singleton pattern - only one settings document
     singleton: {
       type: Boolean,

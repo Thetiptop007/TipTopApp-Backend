@@ -94,6 +94,13 @@ router.post(
 router.get('/admin/me', authMiddleware.protect('admin'), authController.getMe);
 
 router.patch(
+  '/admin/me',
+  authMiddleware.protect('admin'),
+  requireCsrf('admin'),
+  authController.updateMe
+);
+
+router.patch(
   '/admin/change-password',
   authMiddleware.protect('admin'),
   authValidator.validate(authValidator.changePasswordSchema),
@@ -134,6 +141,13 @@ router.post(
 );
 
 router.get('/customer/me', authMiddleware.protect('customer'), authController.getMe);
+
+router.patch(
+  '/customer/me',
+  authMiddleware.protect('customer'),
+  requireCsrf('customer'),
+  authController.updateMe
+);
 
 router.patch(
   '/customer/change-password',

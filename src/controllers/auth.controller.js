@@ -421,6 +421,71 @@ exports.getMe = catchAsync(async (req, res, next) => {
  * Update current user profile
  * PATCH /api/v1/auth/me
  */
+exports.updateMe = catchAsync(async (req, res, next) => {
+  const { name, email, phone } = req.body;
+
+  // Get user
+  const user = await User.findById(req.user._id);
+
+  if (!user) {
+    return next(new AppError('User not found.', 404));
+  }
+
+  // Update name if provided
+  if (name) {
+    if (name.first !== undefined) {
+      user.name.first = name.first;
+    }
+    if (name.last !== undefined) {
+      user.name.last = name.last;
+    }
+  }
+
+  // Update email if provided (with duplicate check)
+  if (email && email !== user.email.address) {
+    const existingUser = await User.findOne({ 'email.address': email });
+    if (existingUser) {
+      return next(
+        new AppError('This email address is already in use by another account.', 409)
+      );
+    }
+    user.email.address = email;
+    user.email.isVerified = false; // Mark as unverified when email changes
+  }
+
+  // Update phone if provided (with duplicate check)
+  if (phone && phone !== user.phone?.number) {
+    const existingUser = await User.findOne({ 'phone.number': phone });
+    if (existingUser) {
+      return next(
+        new AppError('This phone number is already in use by another account.', 409)
+      );
+    }
+    user.phone = user.phone || {};
+    user.phone.number = phone;
+    user.phone.isVerified = false; // Mark as unverified when phone changes
+  }
+
+  await user.save();
+
+  logger.info(`User profile updated: ${user.email.address}`, {
+    userId: user._id.toString(),
+    updates: { name: !!name, email: !!email, phone: !!phone },
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Profile updated successfully.',
+    data: {
+      user,
+    },
+  });
+});
+
+/**
+ * Logout
+ * POST /api/v1/auth/logout
+ */
 exports.logout = catchAsync(async (req, res, next) => {
   const scope = getAuthScope(req, req.user);
 

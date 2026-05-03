@@ -109,7 +109,6 @@ exports.updateSettings = catchAsync(async (req, res, next) => {
     upiId,
     apkDownloadUrl,
     indusAppStoreUrl,
-    adminProfile,
   } = req.body;
 
   // Get the singleton settings document
@@ -132,12 +131,6 @@ exports.updateSettings = catchAsync(async (req, res, next) => {
   if (upiId !== undefined) settings.upiId = upiId;
   if (apkDownloadUrl !== undefined) settings.apkDownloadUrl = apkDownloadUrl;
   if (indusAppStoreUrl !== undefined) settings.indusAppStoreUrl = indusAppStoreUrl;
-  
-  // Update admin profile
-  if (adminProfile !== undefined) {
-    if (adminProfile.firstName !== undefined) settings.adminProfile.firstName = adminProfile.firstName;
-    if (adminProfile.lastName !== undefined) settings.adminProfile.lastName = adminProfile.lastName;
-  }
 
   await settings.save();
 
