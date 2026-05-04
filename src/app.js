@@ -12,6 +12,8 @@ const logger = require('./utils/logger');
 const AppError = require('./utils/AppError');
 const { errorHandler } = require('./middlewares/errorHandler.middleware');
 const cache = require('./utils/cache');
+const suspiciousRequests = require('./middlewares/suspiciousRequests');
+const { getSecurityMiddlewareStack, initializeSecurityLayers } = require('./services/security.service');
 
 const app = express();
 const isProduction = process.env.NODE_ENV === 'production';
@@ -24,6 +26,9 @@ morgan.format('tiptop-prod', ':remote-addr - - [:date[clf]] ":method :url HTTP/:
 
 // In-memory cache is ready to use (no connection needed)
 logger.info('In-memory cache system initialized');
+
+// Initialize layered security layers (Redis + rate limiting)
+initializeSecurityLayers().catch(err => logger.error('Security init error:', err.message));
 
 // Trust proxy (important for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);
@@ -92,19 +97,14 @@ app.use(cors(corsOptions));
 // Handle preflight requests
 app.options('*', cors(corsOptions));
 
-const windowMinutes = Number(process.env.RATE_LIMIT_WINDOW || 15);
-const maxRequests = Number(process.env.RATE_LIMIT_MAX || 100);
-const apiLimiter = rateLimit({
-  windowMs: windowMinutes * 60 * 1000,
-  max: maxRequests,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    status: 'fail',
-    message: 'Too many requests, please try again later.',
-  },
-});
-app.use('/api', apiLimiter);
+// Mount layered security middleware stack
+// Replaces simple IP-based limiter with comprehensive abuse protection:
+// - IP-based rate limiting
+// - Distributed abuse detection
+// - Cost-based throttling for expensive endpoints
+// - User-based limits for authenticated users
+// - Admin-specific stricter limits
+app.use('/api', ...getSecurityMiddlewareStack());
 
 // HTTP request logger
 if (process.env.NODE_ENV === 'development') {
@@ -143,7 +143,6 @@ app.use('/downloads', express.static(path.join(__dirname, '../public/downloads')
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({
-    success: true,
     status: 'ok',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
@@ -153,20 +152,20 @@ app.get('/health', (req, res) => {
 
 // Root route for platform probes (Render often checks "/")
 app.get('/', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'TipTop backend is running',
-    health: '/health',
-    apiBase: '/api/v1',
-  });
+  // Minimal root response to avoid leaking metadata
+  res.status(200).json({ status: 'ok' });
 });
+// Use suspicious request middleware early
+app.use(suspiciousRequests);
 
 app.get('/api/v1', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'TipTop API base endpoint',
-    test: '/api/v1/test',
-  });
+  // If query params present that look like probe parameters, do not reveal metadata
+  if (req.query && Object.keys(req.query).length > 0) {
+    return res.status(404).json({ status: 'fail', message: 'Route not found' });
+  }
+
+  // Minimal health reply for API root
+  return res.status(200).json({ status: 'ok' });
 });
 
 // API routes
@@ -219,8 +218,14 @@ app.get('/api/v1/test', (req, res) => {
 });
 
 // Handle 404 - Route not found
+const getClientIp = require('./utils/getClientIp');
 app.all('*', (req, res, next) => {
-  next(new AppError(`Can't find ${req.originalUrl} on this server`, 404));
+  const ip = getClientIp(req) || 'unknown';
+  if (req.originalUrl && req.originalUrl.startsWith('/api')) {
+    logger.warn(`[SUSPICIOUS_REQUEST] 404 for API path method=${req.method} url=${req.originalUrl} ip=${ip} ua=${req.get('user-agent') || ''}`);
+  }
+  // Do not leak requested URL or framework details
+  next(new AppError('Route not found', 404));
 });
 
 // Global error handling middleware

@@ -4,6 +4,8 @@ const authController = require('../controllers/auth.controller');
 const authMiddleware = require('../middlewares/auth');
 const authValidator = require('../validators/auth.validator');
 const { requireCsrf } = require('../middlewares/csrf');
+const { authBruteForceLimiter } = require('../middlewares/security/ipRateLimit');
+const { refreshTokenRateLimit } = require('../middlewares/security/costBasedThrottle');
 
 const router = express.Router();
 
@@ -73,6 +75,7 @@ const mountDeviceTokenRoutes = (scope) => {
 router.post(
   '/admin/login',
   loginLimiter,
+  authBruteForceLimiter({ windowMs: 15 * 60 * 1000, maxAttempts: 8 }),
   authValidator.validate(authValidator.adminLoginSchema),
   authController.login
 );
@@ -80,6 +83,7 @@ router.post(
 router.post(
   '/admin/refresh',
   refreshLimiter,
+  refreshTokenRateLimit({ windowMs: 15 * 60000, maxRefreshes: 30 }),
   requireCsrf('admin'),
   authController.refreshToken
 );
@@ -122,6 +126,7 @@ router.post(
 router.post(
   '/customer/login',
   loginLimiter,
+  authBruteForceLimiter({ windowMs: 15 * 60 * 1000, maxAttempts: 8 }),
   authValidator.validate(authValidator.customerLoginSchema),
   authController.login
 );
@@ -129,6 +134,7 @@ router.post(
 router.post(
   '/customer/refresh',
   refreshLimiter,
+  refreshTokenRateLimit({ windowMs: 15 * 60000, maxRefreshes: 30 }),
   requireCsrf('customer'),
   authController.refreshToken
 );

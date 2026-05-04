@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const logger = require('./src/utils/logger');
 const { connectDB } = require('./src/config/database');
 const cache = require('./src/utils/cache');
+const { shutdownSecurity } = require('./src/services/security.service');
 
 const app = require('./src/app');
 
@@ -184,6 +185,10 @@ const gracefulShutdown = (signal) => {
           // Cleanup cache
           await cache.disconnect();
           logger.info('✅ Cache cleaned up');
+
+          // Shutdown security infrastructure (Redis, etc.)
+          await shutdownSecurity();
+          logger.info('✅ Security infrastructure shut down');
         } catch (err) {
           logger.error('⚠️ Error during shutdown:', err.message);
         }
