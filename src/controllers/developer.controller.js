@@ -146,7 +146,7 @@ exports.getLogs = catchAsync(async (req, res, next) => {
         }
       });
     } catch (error) {
-      logger.warn(`Failed to read log file: ${fileName}`, error.message);
+      logger.system('LOGS_READ_FAILED', 'Failed to read log file', { fileName, errorMessage: error.message }, { level: 'warn', severity: 'medium' });
     }
     
     res.status(200).json({
@@ -155,7 +155,7 @@ exports.getLogs = catchAsync(async (req, res, next) => {
       data: logs,
     });
   } catch (error) {
-    logger.error('Error reading logs:', error);
+    logger.system('LOGS_READ_FAILED', 'Error reading logs', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     return next(new AppError('Failed to retrieve logs', 500));
   }
 });
@@ -197,7 +197,7 @@ exports.getErrorLogs = catchAsync(async (req, res, next) => {
         );
       }
     } catch (error) {
-      logger.warn('Failed to read error log file', error.message);
+      logger.system('LOGS_READ_FAILED', 'Failed to read error log file', { errorMessage: error.message }, { level: 'warn', severity: 'medium' });
     }
     
     res.status(200).json({
@@ -206,7 +206,7 @@ exports.getErrorLogs = catchAsync(async (req, res, next) => {
       data: errors,
     });
   } catch (error) {
-    logger.error('Error reading error logs:', error);
+    logger.system('LOGS_READ_FAILED', 'Error reading error logs', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     return next(new AppError('Failed to retrieve error logs', 500));
   }
 });
@@ -261,12 +261,12 @@ exports.clearLogs = catchAsync(async (req, res, next) => {
     
     if (type === 'all' || type === 'combined') {
       await fs.writeFile(logFiles.combined, '', 'utf-8');
-      logger.info('Combined logs cleared by admin');
+      logger.system('LOGS_CLEARED', 'Combined logs cleared by admin', { type: 'combined' });
     }
     
     if (type === 'all' || type === 'error') {
       await fs.writeFile(logFiles.error, '', 'utf-8');
-      logger.info('Error logs cleared by admin');
+      logger.system('LOGS_CLEARED', 'Error logs cleared by admin', { type: 'error' });
     }
     
     res.status(200).json({
@@ -274,7 +274,7 @@ exports.clearLogs = catchAsync(async (req, res, next) => {
       message: `${type.charAt(0).toUpperCase() + type.slice(1)} logs cleared successfully`,
     });
   } catch (error) {
-    logger.error('Error clearing logs:', error);
+    logger.system('LOGS_READ_FAILED', 'Error clearing logs', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     return next(new AppError('Failed to clear logs', 500));
   }
 });
@@ -309,12 +309,14 @@ exports.testErrorEmail = catchAsync(async (req, res, next) => {
   try {
     await notifyCriticalError(testError, context);
     
+    logger.system('ERROR_EMAIL_TEST_SENT', 'Test error email sent successfully', { userId: req.user?._id?.toString() || null });
+
     res.status(200).json({
       status: 'success',
       message: 'Test error email sent successfully. Check your email.',
     });
   } catch (error) {
-    logger.error('Failed to send test error email:', error);
+    logger.system('ERROR_EMAIL_TEST_FAILED', 'Failed to send test error email', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     return next(new AppError('Failed to send test error email', 500));
   }
 });
@@ -347,7 +349,7 @@ exports.getDatabaseStats = catchAsync(async (req, res, next) => {
           indexes: colStats.nindexes,
         });
       } catch (err) {
-        logger.warn(`Could not get stats for collection ${collection.name}`);
+        logger.system('DATABASE_STATS_COLLECTION_ERROR', 'Could not get stats for collection', { collectionName: collection.name }, { level: 'warn', severity: 'medium' });
       }
     }
     
@@ -363,7 +365,7 @@ exports.getDatabaseStats = catchAsync(async (req, res, next) => {
       },
     });
   } catch (error) {
-    logger.error('Error getting database stats:', error);
+    logger.system('DATABASE_STATS_RETRIEVED', 'Error getting database stats', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     return next(new AppError('Failed to retrieve database statistics', 500));
   }
 });
@@ -393,6 +395,7 @@ exports.getConfig = catchAsync(async (req, res, next) => {
     status: 'success',
     data: config,
   });
+  logger.system('CONFIG_RETRIEVED', 'Developer config retrieved', { userId: req.user?._id?.toString() || null }, { level: 'debug' });
 });
 
 // Helper function to format uptime

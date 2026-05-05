@@ -65,7 +65,7 @@ const sendErrorProd = (err, res) => {
     });
   } else {
     // Programming or unknown error: don't leak details
-    logger.error('ERROR 💥', err);
+    logger.system('ERROR_UNKNOWN', 'Unknown or programming error encountered', { errorMessage: err?.message || String(err) }, { level: 'error', severity: 'high' });
     res.status(500).json({
       success: false,
       status: 'error',

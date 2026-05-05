@@ -3,7 +3,8 @@
  * Machine-readable structured logging for abuse detection and analysis
  */
 
-const logger = require('../../utils/logger');
+const { logSecurityAudit } = require('../logging/securityAudit.logger');
+const { incrementRateLimit } = require('../metrics.service');
 const { getClientIp } = require('./clientIp.service');
 
 // Standard security event tags
@@ -27,27 +28,21 @@ const EVENT_TAGS = {
  * Log security event with structured data
  */
 function logSecurityEvent(tag, data = {}) {
-  const event = {
-    timestamp: new Date().toISOString(),
-    tag,
-    ...data,
-  };
+  const eventName = String(tag || '').replace(/\[|\]/g, '') || 'SECURITY_EVENT';
 
-  const logLine = JSON.stringify(event);
-  
   switch (tag) {
     case EVENT_TAGS.BRUTE_FORCE_DETECTED:
     case EVENT_TAGS.REFRESH_ABUSE_DETECTED:
     case EVENT_TAGS.DISTRIBUTED_ABUSE_DETECTED:
     case EVENT_TAGS.COST_ABUSE_DETECTED:
     case EVENT_TAGS.RECON_ACTIVITY_DETECTED:
-      logger.warn(logLine);
+      logSecurityAudit(eventName, data, { level: 'warn', severity: 'high' });
       break;
     case EVENT_TAGS.TEMPORARY_BAN:
-      logger.error(logLine);
+      logSecurityAudit(eventName, data, { level: 'error', severity: 'critical' });
       break;
     default:
-      logger.info(logLine);
+      logSecurityAudit(eventName, data, { level: 'info', severity: 'medium' });
   }
 }
 
@@ -116,6 +111,8 @@ function logCostAbuse(req, userId, totalCost, budget, reason) {
  * Log rate limit trigger
  */
 function logRateLimit(req, tier, attempt, limit, escalation = false) {
+  incrementRateLimit(tier, req.user?._id ? 'user' : 'ip');
+
   logSecurityEvent(escalation ? EVENT_TAGS.RATE_LIMIT_ESCALATION : EVENT_TAGS.RATE_LIMIT_TRIGGERED, {
     method: req.method,
     endpoint: req.path,

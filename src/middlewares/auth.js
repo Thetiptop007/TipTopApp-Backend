@@ -4,6 +4,7 @@ const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
+const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/securityAudit.logger');
 
 /**
  * Protect middleware - Verifies JWT token and authenticates user
@@ -15,15 +16,6 @@ const logger = require('../utils/logger');
  * 5. User hasn't changed password after token was issued
  */
 exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) => {
-  if (process.env.NODE_ENV === 'development') {
-    logger.info(`[AUTH_DEBUG] protect start ${JSON.stringify({
-      url: req.originalUrl,
-      method: req.method,
-      requiredScope,
-      hasAuthorization: !!req.headers.authorization,
-    })}`);
-  }
-
   // 1) Get token from header
   let token;
   if (
@@ -33,15 +25,15 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
     token = req.headers.authorization.split(' ')[1];
   }
 
-  if (process.env.NODE_ENV === 'development') {
-    logger.info(`[AUTH_DEBUG] token extracted ${JSON.stringify({
-      url: req.originalUrl,
-      hasToken: !!token,
-      tokenPreview: token ? `${token.slice(0, 8)}...` : null,
-    })}`);
-  }
+
 
   if (!token) {
+    logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
+      reason: 'missing_token',
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'medium' });
     return next(
       new AppError('You are not logged in. Please log in to get access.', 401)
     );
@@ -52,6 +44,12 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
   try {
     decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
   } catch (error) {
+    logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
+      reason: error.name || 'token_verification_error',
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
     if (error.name === 'JsonWebTokenError') {
       return next(new AppError('Invalid token. Please log in again.', 401));
     }
@@ -63,31 +61,45 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
     return next(error);
   }
 
-  if (process.env.NODE_ENV === 'development') {
-    logger.info(`[AUTH_DEBUG] token verified ${JSON.stringify({
-      url: req.originalUrl,
+  // Environment-gated debug logging
+  if (process.env.LOG_DEBUG_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
+    logger.auth('AUTH_TOKEN_VERIFIED', 'Token verified successfully', {
       userId: decoded.id,
       scope: decoded.scope || null,
-    })}`);
+    }, { level: 'debug' });
   }
 
   if (requiredScope && decoded.scope && decoded.scope !== requiredScope) {
+    logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
+      reason: 'invalid_scope_in_token',
+      requiredScope,
+      providedScope: decoded.scope,
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
     return next(new AppError('Invalid authentication scope.', 403));
   }
 
   // 3) Check if user still exists
   const user = await User.findById(decoded.id).select('+isActive');
 
-  if (process.env.NODE_ENV === 'development') {
-    logger.info(`[AUTH_DEBUG] user lookup complete ${JSON.stringify({
-      url: req.originalUrl,
+  // Environment-gated debug logging
+  if (process.env.LOG_DEBUG_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
+    logger.auth('AUTH_DEBUG', 'User lookup completed', {
       userFound: !!user,
       role: user?.role || null,
       isActive: user?.isActive,
-      isBlocked: user?.isBlocked,
-    })}`);
+    }, { level: 'debug' });
   }
   if (!user) {
+    logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
+      reason: 'user_not_found_for_token',
+      userId: decoded.id,
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
     return next(
       new AppError('The user belonging to this token no longer exists.', 401)
     );
@@ -107,6 +119,15 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
   }
 
   if (requiredScope && user.role !== requiredScope) {
+    logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
+      reason: 'user_scope_mismatch',
+      userId: user._id.toString(),
+      role: req.user?.role,
+      requiredScope,
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
     return next(new AppError('Invalid authentication scope.', 403));
   }
 
@@ -125,7 +146,6 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
 
   // Grant access to protected route
   req.user = user;
-  logger.info(`User authenticated (${user.role})`);
   next();
 });
 
@@ -148,17 +168,30 @@ exports.restrictTo = (...roles) => {
     const hasRequiredRole = roles.some(role => userRoles.includes(role));
 
     if (!hasRequiredRole) {
-      logger.warn(
-        `Access denied (roles: ${userRoles.join(', ')}) - Required: ${roles.join(', ')}`
-      );
+      logger.auth('AUTH_ACCESS_DENIED', 'Access denied due to insufficient role', {
+        userId: req.user._id.toString(),
+        userRoles,
+        requiredRoles: roles,
+      });
+      logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
+        reason: 'role_restriction_denied',
+        userId: req.user._id.toString(),
+        userRoles,
+        requiredRoles: roles,
+        path: req.originalUrl,
+        method: req.method,
+        ip: req.ip,
+      }, { level: 'warn', severity: 'high' });
       return next(
         new AppError('You do not have permission to perform this action.', 403)
       );
     }
 
-    logger.info(
-      `Access granted (roles: ${userRoles.join(', ')})`
-    );
+    logger.auth('AUTH_ACCESS_GRANTED', 'User authorized successfully', {
+      userId: req.user._id.toString(),
+      userRole: req.user.role,
+      requiredRoles: roles,
+    });
     next();
   };
 };
@@ -189,8 +222,7 @@ exports.optionalAuth = catchAsync(async (req, res, next) => {
       req.user = user;
     }
   } catch (error) {
-    // Silently fail for optional auth
-    logger.debug(`Optional auth failed: ${error.message}`);
+    // Silently fail for optional auth (no security log needed)
   }
 
   next();
@@ -221,9 +253,10 @@ exports.checkOwnership = (resourceUserIdField = 'user') => {
     }
 
     if (resourceUserId.toString() !== req.user._id.toString()) {
-      logger.warn(
-        `Ownership check failed - Resource: ${resourceUserId}`
-      );
+      logger.auth('AUTH_ACCESS_DENIED', 'Ownership check failed', {
+        userId: req.user._id.toString(),
+        resourceUserId: resourceUserId.toString(),
+      });
       return next(
         new AppError('You do not have permission to access this resource.', 403)
       );

@@ -61,7 +61,7 @@ exports.addAddress = catchAsync(async (req, res, next) => {
 
   const newAddress = user.addresses[user.addresses.length - 1];
 
-  logger.info(`Address added for user: ${user.email.address}`);
+  logger.business('USER_ADDRESS_ADDED', 'Address added for user', { userId: user._id.toString(), addressId: newAddress._id.toString() });
 
   res.status(201).json({
     status: 'success',
@@ -115,7 +115,7 @@ exports.updateAddress = catchAsync(async (req, res, next) => {
 
   await user.save();
 
-  logger.info(`Address updated for user: ${user.email.address}`);
+  logger.business('USER_ADDRESS_UPDATED', 'Address updated for user', { userId: user._id.toString(), addressId: address._id.toString() });
 
   res.status(200).json({
     status: 'success',
@@ -158,7 +158,7 @@ exports.deleteAddress = catchAsync(async (req, res, next) => {
 
   await user.save();
 
-  logger.info(`Address deleted for user: ${user.email.address}`);
+  logger.business('USER_ADDRESS_DELETED', 'Address deleted for user', { userId: user._id.toString(), addressId });
 
   res.status(200).json({
     status: 'success',
@@ -196,7 +196,7 @@ exports.setDefaultAddress = catchAsync(async (req, res, next) => {
 
   await user.save();
 
-  logger.info(`Default address set for user: ${user.email.address}`);
+  logger.business('USER_ADDRESS_DEFAULT_SET', 'Default address set for user', { userId: user._id.toString(), addressId });
 
   res.status(200).json({
     status: 'success',

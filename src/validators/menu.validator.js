@@ -372,11 +372,10 @@ exports.menuQuerySchema = Joi.object({
  */
 exports.validate = (schema) => {
   return (req, res, next) => {
-    logger.debug('[Validation] Request:', {
-      body: req.body,
+    logger.request('REQUEST_VALIDATION_STARTED', 'Request validation started', {
       path: req.path,
       method: req.method
-    });
+    }, { level: 'debug' });
     
     const { error, value } = schema.validate(req.body, {
       abortEarly: false,
@@ -391,10 +390,10 @@ exports.validate = (schema) => {
         context: detail.context
       }));
 
-      logger.warn('[Validation] Validation failed', {
-        errors: errors,
-        errorDetails: error.details
-      });
+      logger.request('REQUEST_VALIDATION_FAILED', 'Request validation failed', {
+        errorCount: errors.length,
+        errors: errors.map(e => e.field + ': ' + e.message).slice(0, 5)
+      }, { severity: 'medium' });
 
       return res.status(400).json({
         status: 'fail',
@@ -403,9 +402,7 @@ exports.validate = (schema) => {
       });
     }
 
-    logger.debug('[Validation] Validation passed', {
-      validatedValue: value
-    });
+    logger.request('REQUEST_VALIDATION_PASSED', 'Request validation passed', {}, { level: 'debug' });
     
     req.body = value;
     next();

@@ -23,7 +23,7 @@ async function initializeRedis() {
       try {
         redis = require('redis');
       } catch (e) {
-        logger.warn('redis package not installed. Using in-memory rate limiting.');
+        logger.system('SECURITY_REDIS_INIT_WARNING', 'redis package not installed', {}, { level: 'warn', severity: 'medium' });
         return null;
       }
 
@@ -33,7 +33,7 @@ async function initializeRedis() {
         password: process.env.REDIS_PASSWORD || undefined,
         retry_strategy: (options) => {
           if (options.error && options.error.code === 'ECONNREFUSED') {
-            logger.error('Redis connection refused. Falling back to in-memory.');
+            logger.system('RATE_LIMIT_FALLBACK_MEMORY', 'Redis connection refused, using in-memory rate limiting', {}, { level: 'warn', severity: 'high' });
             return new Error('Redis unavailable');
           }
           return Math.min(options.attempt * 100, 3000);
@@ -41,27 +41,27 @@ async function initializeRedis() {
       });
 
       client.on('error', (err) => {
-        logger.error('Redis error:', err.message);
+        logger.system('REDIS_ERROR', 'Redis error occurred', { errorMessage: err.message }, { level: 'error', severity: 'high' });
       });
 
       client.on('connect', () => {
-        logger.info('[SECURITY] Redis connected for layered rate limiting');
+        logger.system('RATE_LIMIT_BACKEND_SELECTED', 'Rate limiting backend selected', { backend: 'Redis' });
       });
 
       return new Promise((resolve) => {
         client.ping((err, reply) => {
           if (err) {
-            logger.warn('Redis not available, using in-memory rate limiting');
+            logger.system('RATE_LIMIT_FALLBACK_MEMORY', 'Redis not available, using in-memory rate limiting', {}, { level: 'warn', severity: 'medium' });
             resolve(null);
           } else {
-            logger.info('[SECURITY] Redis ping successful');
+            logger.system('RATE_LIMIT_BACKEND_SELECTED', 'Redis rate limiting backend initialized');
             resolve(client);
           }
         });
       });
     }
   } catch (error) {
-    logger.warn('Redis initialization failed:', error.message);
+    logger.system('SECURITY_INIT_FAILED', 'Failed to initialize security layers', { errorMessage: error.message }, { level: 'error', severity: 'high' });
   }
 
   return null;
@@ -72,12 +72,11 @@ async function initializeRedis() {
  */
 async function initializeSecurityLayers() {
   if (securityInitialized) {
-    logger.debug('Security layers already initialized');
     return;
   }
 
   try {
-    logger.info('[SECURITY] Initializing layered abuse protection system...');
+    logger.system('SECURITY_INIT_START', 'Initializing security layers');
 
     // Try Redis
     redisClient = await initializeRedis();
@@ -90,12 +89,11 @@ async function initializeSecurityLayers() {
     userRateLimit.initStore(redisClient);
     costBasedThrottle.initStore(redisClient);
 
-    logger.info('[SECURITY] Layered abuse protection system initialized');
-    logger.info(`[SECURITY] Backend: ${redisClient ? 'Redis' : 'In-Memory'}`);
+    logger.system('SECURITY_INIT_COMPLETE', 'Security layers initialized', { backend: redisClient ? 'Redis' : 'In-Memory' });
 
     securityInitialized = true;
   } catch (error) {
-    logger.error('[SECURITY] Failed to initialize security layers:', error.message);
+    logger.system('SECURITY_INIT_FAILED', 'Failed to initialize security layers', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     // Continue with in-memory fallback
     securityInitialized = true;
   }
@@ -170,7 +168,7 @@ async function shutdownSecurity() {
   if (redisClient) {
     return new Promise((resolve) => {
       redisClient.quit(() => {
-        logger.info('[SECURITY] Redis connection closed');
+        logger.system('REDIS_CONNECTION_CLOSED', 'Redis connection closed');
         resolve();
       });
     });

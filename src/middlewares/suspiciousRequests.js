@@ -1,5 +1,7 @@
 const logger = require('../utils/logger');
 const { getClientIp } = require('../services/security/clientIp.service');
+const { logSecurityAudit } = require('../services/logging/securityAudit.logger');
+const { observeAttack } = require('../services/security/attackAggregator.service');
 
 // In-memory counters (simple, reset on restart)
 const ipCounters = new Map();
@@ -54,14 +56,40 @@ module.exports = (req, res, next) => {
       const looksLikeProbe = queryKeys.some(k => PROBE_QUERY_KEYS.has(k) || /^[0-9a-f]{6,}$/i.test(req.query[k] ? String(req.query[k]) : '')) || queryKeys.length > 0;
 
       if (looksLikeProbe) {
-        logger.warn(`[SUSPICIOUS_REQUEST] method=${method} originalUrl=${originalUrl} ip=${ip} ua=${ua} referer=${referer} origin=${origin} query=${JSON.stringify(req.query)}`);
+        observeAttack({
+          ip,
+          userAgent: ua,
+          route: req.path,
+          attackType: 'SUSPICIOUS_QUERY_PROBING',
+          rawContext: { method, originalUrl, query: req.query, referer, origin },
+        });
+        logSecurityAudit('SUSPICIOUS_QUERY_PROBING', {
+          method,
+          originalUrl,
+          ip,
+          userAgent: ua,
+          referer,
+          origin,
+          query: req.query,
+        }, { level: 'warn', severity: 'high' });
 
         // record root hit
         counters.rootHits.push(now());
         pruneArray(counters.rootHits, ROOT_WINDOW_MS);
 
         if (counters.rootHits.length > ROOT_LIMIT) {
-          logger.warn(`[RATE_LIMIT] excessive root probing detected for ip=${ip} count=${counters.rootHits.length}`);
+          observeAttack({
+            ip,
+            userAgent: ua,
+            route: req.path,
+            attackType: 'SUSPICIOUS_BURST',
+            rawContext: { count: counters.rootHits.length, windowMs: ROOT_WINDOW_MS },
+          });
+          logSecurityAudit('SUSPICIOUS_PROBE_RATE_LIMIT', {
+            ip,
+            count: counters.rootHits.length,
+            windowMs: ROOT_WINDOW_MS,
+          }, { level: 'warn', severity: 'high' });
           return res.status(429).json({ status: 'fail', message: 'Too many requests' });
         }
         // mark as suspicious but allow downstream to respond (we may choose to respond 404 there)
@@ -79,7 +107,19 @@ module.exports = (req, res, next) => {
       const distinct = counters.invalidRoutes.size;
       if (distinct > 10 && !counters.reconLogged) {
         counters.reconLogged = true;
-        logger.warn(`[RECON_ACTIVITY_DETECTED] ip=${ip} distinctInvalidPaths=${distinct} samplePath=${req.path} ua=${ua}`);
+        observeAttack({
+          ip,
+          userAgent: ua,
+          route: req.path,
+          attackType: 'PROBE_CLUSTER',
+          rawContext: { distinctInvalidPaths: distinct, samplePath: req.path },
+        });
+        logSecurityAudit('RECON_ACTIVITY_DETECTED', {
+          ip,
+          distinctInvalidPaths: distinct,
+          samplePath: req.path,
+          userAgent: ua,
+        }, { level: 'warn', severity: 'high' });
       }
 
       // If overall invalid route counts cross a threshold in window, log
@@ -87,7 +127,18 @@ module.exports = (req, res, next) => {
       for (const v of counters.invalidRoutes.values()) totalInvalid += v;
       if (totalInvalid > INVALID_ROUTE_THRESHOLD && !counters.reconLogged) {
         counters.reconLogged = true;
-        logger.warn(`[RECON_ACTIVITY_DETECTED] ip=${ip} totalInvalidRequests=${totalInvalid}`);
+        observeAttack({
+          ip,
+          userAgent: ua,
+          route: req.path,
+          attackType: 'ATTACK_SUMMARY',
+          rawContext: { totalInvalidRequests: totalInvalid, windowMs: INVALID_ROUTE_WINDOW_MS },
+        });
+        logSecurityAudit('RECON_ACTIVITY_DETECTED', {
+          ip,
+          totalInvalidRequests: totalInvalid,
+          windowMs: INVALID_ROUTE_WINDOW_MS,
+        }, { level: 'warn', severity: 'high' });
       }
     }
 

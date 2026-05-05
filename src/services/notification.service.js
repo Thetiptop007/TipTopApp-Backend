@@ -1,6 +1,7 @@
 const admin = require('firebase-admin');
 const https = require('https');
 const logger = require('../utils/logger');
+const { LOG_EVENTS } = require('../constants/log-events');
 
 class NotificationService {
   constructor() {
@@ -14,14 +15,14 @@ class NotificationService {
       // Check if Firebase is already initialized
       if (admin.apps.length > 0) {
         this.initialized = true;
-        logger.info('✅ Firebase Cloud Messaging initialized');
+        logger.system('NOTIFICATION_FCM_ALREADY_INITIALIZED', 'Firebase Cloud Messaging already initialized');
       } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount)
         });
         this.initialized = true;
-        logger.info('✅ Firebase Cloud Messaging initialized from environment variable');
+        logger.system('NOTIFICATION_FCM_INITIALIZED_FROM_ENV', 'Firebase Cloud Messaging initialized from environment variable');
       } else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
         admin.initializeApp({
           credential: admin.credential.cert({
@@ -31,18 +32,18 @@ class NotificationService {
           })
         });
         this.initialized = true;
-        logger.info('✅ Firebase Cloud Messaging initialized from individual env vars');
+        logger.system('NOTIFICATION_FCM_INITIALIZED_FROM_VARS', 'Firebase Cloud Messaging initialized from individual env vars');
       } else {
-        logger.warn('⚠️  Firebase credentials not configured. FCM push notifications will be disabled.');
+        logger.system('NOTIFICATION_FCM_CREDENTIALS_MISSING', 'Firebase credentials not configured; FCM disabled', {}, { level: 'warn', severity: 'medium' });
       }
 
       if (!this.expoAccessToken) {
-        logger.warn('⚠️  EXPO_ACCESS_TOKEN not configured. Expo push notifications will be disabled.');
+        logger.system('NOTIFICATION_EXPO_TOKEN_MISSING', 'EXPO_ACCESS_TOKEN not configured; Expo disabled', {}, { level: 'warn', severity: 'medium' });
       } else {
-        logger.info('✅ Expo Push Notifications configured');
+        logger.system('NOTIFICATION_EXPO_CONFIGURED', 'Expo Push Notifications configured');
       }
     } catch (error) {
-      logger.error('❌ Failed to initialize notification services:', error.message);
+      logger.system('NOTIFICATION_INIT_FAILED', 'Failed to initialize notification services', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       this.initialized = false;
     }
   }
@@ -62,7 +63,9 @@ class NotificationService {
    */
   async sendExpoNotification(token, title, body, data = {}) {
     if (!this.expoAccessToken) {
-      logger.warn('Expo token configured but EXPO_ACCESS_TOKEN not available');
+      logger.notification('EXPO_DISABLED', 'Expo notifications disabled', {
+        reason: 'missing_expo_access_token',
+      }, { level: 'warn', severity: 'medium' });
       return false;
     }
 
@@ -104,28 +107,28 @@ class NotificationService {
             try {
               const response = JSON.parse(responseData);
               if (response.data) {
-                logger.info(`✅ [EXPO] Push notification sent successfully`);
+                logger.system('NOTIFICATION_EXPO_SENT', 'Expo push notification sent successfully');
                 resolve(true);
               } else {
-                logger.error(`❌ [EXPO] Failed to send notification:`, response.errors);
+                logger.system('NOTIFICATION_EXPO_FAILED', 'Failed to send Expo notification', { errors: response.errors }, { level: 'error', severity: 'high' });
                 resolve(false);
               }
             } catch (error) {
-              logger.error(`❌ [EXPO] Failed to parse response: ${error.message}`);
+              logger.system('NOTIFICATION_EXPO_RESPONSE_PARSE_FAILED', 'Failed to parse Expo response', { errorMessage: error.message }, { level: 'error', severity: 'high' });
               resolve(false);
             }
           });
         });
 
         req.on('error', (error) => {
-          logger.error(`❌ [EXPO] Error sending notification: ${error.message}`);
+          logger.system('NOTIFICATION_EXPO_REQUEST_ERROR', 'Error sending Expo notification', { errorMessage: error.message }, { level: 'error', severity: 'high' });
           resolve(false);
         });
 
         req.write(JSON.stringify(payload));
         req.end();
       } catch (error) {
-        logger.error(`❌ [EXPO] Error preparing notification: ${error.message}`);
+        logger.system('NOTIFICATION_EXPO_PREP_ERROR', 'Error preparing Expo notification', { errorMessage: error.message }, { level: 'error', severity: 'high' });
         resolve(false);
       }
     });
@@ -143,12 +146,12 @@ class NotificationService {
     }
 
     const tokenType = this.getTokenType(deviceToken);
-    logger.info(`📱 Sending order notification via ${tokenType.toUpperCase()}`);
+    logger.system('NOTIFICATION_SENDING', 'Sending order notification', { tokenType });
 
     try {
       const totalAmount = order.pricing?.finalAmount || order.totalAmount || 0;
       
-      const title = '🎉 Order Placed Successfully!';
+      const title = 'Order Placed Successfully';
       const body = `Order #${order.orderNumber || order._id.toString().slice(-6)} - ${order.items.length} items - ₹${totalAmount.toFixed(2)}`;
       
       const data = {
@@ -190,18 +193,18 @@ class NotificationService {
         };
 
         const response = await admin.messaging().send(message);
-        logger.info(`✅ [FCM] Order notification sent successfully! Response: ${response}`);
+        logger.system('NOTIFICATION_FCM_SENT', 'FCM order notification sent successfully', { response });
         return true;
       }
-
-      logger.warn(`⚠️  No notification service available for token type: ${tokenType}`);
+      logger.system('NOTIFICATION_NO_SERVICE_FOR_TOKEN', 'No notification service available for token type', { tokenType }, { level: 'warn', severity: 'medium' });
       return false;
     } catch (error) {
-      logger.error(`❌ Failed to send order notification`);
-      logger.error(`   Token Type: ${tokenType}`);
-      logger.error(`   Error: ${error.message}`);
-      logger.error(`   Order ID: ${order._id}`);
-      logger.error(`   Device Token (first 30): ${deviceToken.substring(0, 30)}`);
+      logger.system('NOTIFICATION_SEND_ERROR', 'Failed to send order notification', {
+        tokenType,
+        errorMessage: error.message,
+        orderId: order._id,
+        deviceTokenPrefix: deviceToken ? deviceToken.substring(0, 30) : undefined,
+      }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -222,12 +225,12 @@ class NotificationService {
 
     try {
       const statusMessages = {
-        confirmed: '✅ Your order has been confirmed!',
-        preparing: '👨‍🍳 Your order is being prepared',
-        ready: '🎉 Your order is ready for pickup!',
-        picked_up: '🚚 Your order is out for delivery',
-        delivered: '✅ Your order has been delivered!',
-        cancelled: '❌ Your order has been cancelled'
+        confirmed: 'Your order has been confirmed',
+        preparing: 'Your order is being prepared',
+        ready: 'Your order is ready for pickup',
+        picked_up: 'Your order is out for delivery',
+        delivered: 'Your order has been delivered',
+        cancelled: 'Your order has been cancelled'
       };
 
       const title = 'Order Status Update';
@@ -269,14 +272,13 @@ class NotificationService {
         };
 
         const response = await admin.messaging().send(message);
-        logger.info(`✅ Order status notification sent. Status: ${newStatus}, FCM Response: ${response}`);
+        logger.system('NOTIFICATION_ORDER_STATUS_SENT', 'Order status notification sent', { status: newStatus, response });
         return true;
       }
-
-      logger.warn(`⚠️  No notification service available for token type: ${tokenType}`);
+      logger.system('NOTIFICATION_NO_SERVICE_FOR_TOKEN', 'No notification service available for token type', { tokenType }, { level: 'warn', severity: 'medium' });
       return false;
     } catch (error) {
-      logger.error(`❌ Failed to send order status update: ${error.message}`);
+      logger.system('NOTIFICATION_ORDER_STATUS_FAILED', 'Failed to send order status update', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -324,14 +326,13 @@ class NotificationService {
         };
 
         const response = await admin.messaging().send(message);
-        logger.info(`✅ [FCM] Custom notification sent. Response: ${response}`);
+        logger.system('NOTIFICATION_FCM_CUSTOM_SENT', 'FCM custom notification sent', { response });
         return true;
       }
-
-      logger.warn(`⚠️  No notification service available for token type: ${tokenType}`);
+      logger.system('NOTIFICATION_NO_SERVICE_FOR_TOKEN', 'No notification service available for token type', { tokenType }, { level: 'warn', severity: 'medium' });
       return false;
     } catch (error) {
-      logger.error(`❌ Failed to send custom notification: ${error.message}`);
+      logger.system('NOTIFICATION_CUSTOM_FAILED', 'Failed to send custom notification', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -361,7 +362,7 @@ class NotificationService {
       }
     }
 
-    logger.info(`📊 Broadcast complete - Success: ${successCount}, Failed: ${failedCount}`);
+    logger.system('NOTIFICATION_BROADCAST_COMPLETE', 'Notification broadcast complete', { successCount, failedCount });
     return { success: successCount, failed: failedCount };
   }
 }

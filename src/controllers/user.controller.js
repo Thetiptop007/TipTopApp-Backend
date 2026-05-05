@@ -70,7 +70,7 @@ exports.updateUser = catchAsync(async (req, res, next) => {
   delete req.body.passwordResetExpires;
 
   const user = await User.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
+    returnDocument: 'after',
     runValidators: true,
   });
 
@@ -98,7 +98,7 @@ exports.deleteUser = catchAsync(async (req, res, next) => {
   const user = await User.findByIdAndUpdate(
     req.params.id,
     { isActive: false },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!user) {
@@ -142,7 +142,7 @@ exports.restoreUser = catchAsync(async (req, res, next) => {
   const user = await User.findByIdAndUpdate(
     req.params.id,
     { isActive: true },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!user) {
@@ -188,7 +188,7 @@ exports.toggleBlockUser = catchAsync(async (req, res, next) => {
       isBlocked,
       blockReason: isBlocked ? (blockReason || 'Blocked by admin') : '',
     },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!user) {
@@ -338,7 +338,7 @@ exports.updateUserRole = catchAsync(async (req, res, next) => {
   const user = await User.findByIdAndUpdate(
     req.params.id,
     { role },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!user) {

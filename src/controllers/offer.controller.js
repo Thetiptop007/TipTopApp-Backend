@@ -12,6 +12,7 @@ const APIFeatures = require('../utils/APIFeatures');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
+const { BUSINESS_EVENTS, logBusinessEvent } = require('../services/logging/businessEvent.logger');
 
 /* =====================================================
    ADMIN OFFER CONTROLLERS
@@ -101,6 +102,16 @@ exports.createOffer = catchAsync(async (req, res, next) => {
   ]);
 
   logger.info(`Offer created: ${offer.name} by ${req.user.email}`);
+  logBusinessEvent(BUSINESS_EVENTS.OFFER_CHANGED, {
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: offer._id.toString(),
+    entityType: 'offer',
+    metadata: {
+      action: 'create',
+      status: offer.status,
+    },
+  });
 
   res.status(201).json({
     success: true,
@@ -141,7 +152,7 @@ exports.updateOffer = catchAsync(async (req, res, next) => {
     req.params.id,
     req.body,
     {
-      new: true,
+      returnDocument: 'after',
       runValidators: true,
     }
   ).populate([
@@ -155,6 +166,16 @@ exports.updateOffer = catchAsync(async (req, res, next) => {
   }
 
   logger.info(`Offer updated: ${offer.name} by ${req.user.email}`);
+  logBusinessEvent(BUSINESS_EVENTS.OFFER_CHANGED, {
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: offer._id.toString(),
+    entityType: 'offer',
+    metadata: {
+      action: 'update',
+      fieldsUpdated: Object.keys(req.body || {}),
+    },
+  });
 
   res.status(200).json({
     success: true,
@@ -171,7 +192,7 @@ exports.deactivateOffer = catchAsync(async (req, res, next) => {
   const offer = await Offer.findByIdAndUpdate(
     req.params.id,
     { status: 'deactivated' },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!offer) {
@@ -179,6 +200,16 @@ exports.deactivateOffer = catchAsync(async (req, res, next) => {
   }
 
   logger.info(`Offer deactivated: ${offer.name} by ${req.user.email}`);
+  logBusinessEvent(BUSINESS_EVENTS.OFFER_CHANGED, {
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: offer._id.toString(),
+    entityType: 'offer',
+    metadata: {
+      action: 'deactivate',
+      status: offer.status,
+    },
+  });
 
   res.status(200).json({
     success: true,
@@ -199,6 +230,15 @@ exports.deleteOffer = catchAsync(async (req, res, next) => {
   }
 
   logger.info(`Offer deleted: ${offer.name} by ${req.user.email}`);
+  logBusinessEvent(BUSINESS_EVENTS.OFFER_CHANGED, {
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: offer._id.toString(),
+    entityType: 'offer',
+    metadata: {
+      action: 'delete',
+    },
+  });
 
   res.status(204).json({
     success: true,

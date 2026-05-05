@@ -22,7 +22,7 @@ const guestOrderLimiter = rateLimit({
   legacyHeaders: false,
   handler: (req, res) => {
     if (isDevelopment) {
-      logger.warn(`[GuestProtection] Rate limit blocked guest order from IP=${req.ip}`);
+      logger.security('GUEST_ORDER_BLOCKED', 'Guest order rate limit blocked', { ip: req.ip, limit: GUEST_LIMIT_MAX, windowMs: GUEST_LIMIT_WINDOW_MS }, { level: 'warn', severity: 'medium' });
     }
 
     return res.status(429).json({
@@ -40,7 +40,7 @@ const guestOrderCooldown = (req, res, next) => {
   if (lastAttemptAt && now - lastAttemptAt < GUEST_COOLDOWN_MS) {
     if (isDevelopment) {
       const waitMs = GUEST_COOLDOWN_MS - (now - lastAttemptAt);
-      logger.warn(`[GuestProtection] Cooldown blocked key=${key}, remainingMs=${waitMs}`);
+      logger.security('GUEST_ORDER_COOLDOWN_BLOCKED', 'Guest order cooldown blocked', { key, remainingMs: waitMs }, { level: 'warn', severity: 'medium' });
     }
 
     return res.status(429).json({
@@ -62,7 +62,7 @@ const guestOrderCooldown = (req, res, next) => {
   }
 
   if (isDevelopment) {
-    logger.info(`[GuestProtection] Cooldown passed key=${key}`);
+    logger.security('GUEST_ORDER_COOLDOWN_PASSED', 'Guest order cooldown passed', { key }, { level: 'debug' });
   }
 
   next();
@@ -73,7 +73,7 @@ const checkGuestHoneypot = (req, res, next) => {
 
   if (honeypotValue) {
     if (isDevelopment) {
-      logger.warn(`[GuestProtection] Honeypot blocked guest order from IP=${req.ip}`);
+      logger.security('GUEST_HONEYPOT_BLOCKED', 'Guest honeypot blocked guest order', { ip: req.ip }, { level: 'warn', severity: 'medium' });
     }
 
     return res.status(400).json({
@@ -83,7 +83,7 @@ const checkGuestHoneypot = (req, res, next) => {
   }
 
   if (isDevelopment) {
-    logger.info('[GuestProtection] Honeypot passed');
+    logger.security('GUEST_HONEYPOT_PASSED', 'Guest honeypot passed', {}, { level: 'debug' });
   }
 
   next();

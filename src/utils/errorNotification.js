@@ -9,14 +9,14 @@ const notifyCriticalError = async (error, context = {}) => {
     // Only send emails in production or if explicitly enabled
     const env = process.env.NODE_ENV || 'development';
     if (env === 'development' && process.env.ENABLE_ERROR_EMAILS !== 'true') {
-      logger.info('📧 [DEV MODE] Skipping error email notification');
+      logger.system('ERROR_EMAIL_SKIPPED_DEV', 'Skipping error email notification in development', {}, { level: 'info' });
       return;
     }
 
     // Use the universal email service
     await emailService.sendErrorNotification(error, context);
   } catch (notificationError) {
-    logger.error('❌ Failed to send critical error notification:', notificationError);
+    logger.system('ERROR_NOTIFICATION_FAILED', 'Failed to send critical error notification', { errorMessage: notificationError?.message || String(notificationError) }, { level: 'error', severity: 'high' });
     // Don't throw - we don't want email failures to break the app
   }
 };

@@ -1,0 +1,47 @@
+groups:
+  - name: tiptop-backend-alerts
+    rules:
+      - alert: PaymentFailuresSpike
+        expr: sum(rate(tiptop_payment_events_total{event="PAYMENT_FAILED"}[5m])) > 3
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Payment failures are spiking
+          description: Payment failure rate is above threshold for 10 minutes.
+
+      - alert: WebhookVerificationFailure
+        expr: sum(rate(tiptop_webhook_verification_failures_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: Webhook verification failures detected
+          description: Verify payment webhook signatures and source IP allowlist.
+
+      - alert: Api5xxSpike
+        expr: sum(rate(tiptop_http_errors_total[5m])) > 5
+        for: 10m
+        labels:
+          severity: high
+        annotations:
+          summary: API 5xx spike
+          description: Backend is returning elevated 5xx responses.
+
+      - alert: SuspiciousTrafficBurst
+        expr: sum(rate(tiptop_suspicious_requests_total[5m])) > 10
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: Suspicious traffic burst detected
+          description: Investigate suspicious probes and possible automated scans.
+
+      - alert: AdminAccessAnomaly
+        expr: sum(rate(tiptop_security_events_total{event="AUTH_ADMIN_ACCESS_DENIED"}[15m])) > 2
+        for: 15m
+        labels:
+          severity: medium
+        annotations:
+          summary: Multiple denied admin access attempts
+          description: Elevated denied admin access attempts detected.

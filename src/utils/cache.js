@@ -19,7 +19,7 @@ class InMemoryCache {
     
     // Cleanup old entries every 5 minutes to prevent memory leaks
     this.cleanupInterval = setInterval(() => this.cleanup(), 5 * 60 * 1000);
-    logger.info('In-Memory Cache: Initialized (cleanup every 5 minutes)');
+    logger.system('CACHE_INIT', 'In-memory cache initialized');
   }
 
   /**
@@ -84,7 +84,7 @@ class InMemoryCache {
 
       return true;
     } catch (error) {
-      logger.error(`Cache SET error for key ${key}:`, error);
+      logger.system('CACHE_OP_ERROR', 'Cache SET operation failed', { key: key.substring(0, 50), errorMessage: error?.message || String(error) }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -105,7 +105,7 @@ class InMemoryCache {
       this.store.delete(key);
       return true;
     } catch (error) {
-      logger.error(`Cache DEL error for key ${key}:`, error);
+      logger.system('CACHE_OP_ERROR', 'Cache DEL operation failed', { key: key.substring(0, 50), errorMessage: error?.message || String(error) }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -130,12 +130,12 @@ class InMemoryCache {
       }
 
       if (deletedCount > 0) {
-        logger.debug(`Cache: Deleted ${deletedCount} keys matching pattern ${pattern}`);
+        logger.system('CACHE_CLEANUP', 'Cache pattern deleted', { pattern, deletedCount }, { level: 'debug' });
       }
 
       return true;
     } catch (error) {
-      logger.error(`Cache DEL pattern error for ${pattern}:`, error);
+      logger.system('CACHE_OP_ERROR', 'Cache pattern delete failed', { pattern: pattern.substring(0, 50), errorMessage: error?.message || String(error) }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -149,7 +149,7 @@ class InMemoryCache {
       const cachedValue = await this.get(key);
       return cachedValue !== null;
     } catch (error) {
-      logger.error(`Cache EXISTS error for key ${key}:`, error);
+      logger.system('CACHE_OP_ERROR', 'Cache EXISTS check failed', { key: key.substring(0, 50), errorMessage: error?.message || String(error) }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -185,7 +185,7 @@ class InMemoryCache {
 
       return true;
     } catch (error) {
-      logger.error(`Cache EXPIRE error for key ${key}:`, error);
+      logger.system('CACHE_OP_ERROR', 'Cache EXPIRE operation failed', { key: key.substring(0, 50), errorMessage: error?.message || String(error) }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -207,7 +207,7 @@ class InMemoryCache {
 
       return newValue;
     } catch (error) {
-      logger.error(`Cache INCR error for key ${key}:`, error);
+      logger.system('CACHE_OP_ERROR', 'Cache INCR operation failed', { key: key.substring(0, 50), errorMessage: error?.message || String(error) }, { level: 'error', severity: 'high' });
       return null;
     }
   }
@@ -226,10 +226,10 @@ class InMemoryCache {
       this.store.clear();
       this.timers.clear();
 
-      logger.info('Cache: All entries cleared');
+      logger.system('CACHE_FLUSHED', 'Cache cleared');
       return true;
     } catch (error) {
-      logger.error('Cache FLUSHALL error:', error);
+      logger.system('CACHE_OP_ERROR', 'Cache flush failed', { errorMessage: error?.message || String(error) }, { level: 'error', severity: 'high' });
       return false;
     }
   }
@@ -273,7 +273,7 @@ class InMemoryCache {
     }
 
     if (cleanedCount > 0) {
-      logger.debug(`Cache cleanup: Removed ${cleanedCount} expired entries`);
+      logger.system('CACHE_CLEANUP', 'Cache cleanup completed', { removedCount: cleanedCount }, { level: 'debug' });
     }
   }
 
@@ -291,7 +291,7 @@ class InMemoryCache {
     this.store.clear();
     this.timers.clear();
 
-    logger.info('In-Memory Cache: Shutdown complete');
+    logger.system('CACHE_SHUTDOWN', 'Cache shutdown completed');
   }
 }
 

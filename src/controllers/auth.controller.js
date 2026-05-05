@@ -6,6 +6,9 @@ const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
 const notificationService = require('../services/notification.service');
+const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/securityAudit.logger');
+const { logAuthEvent } = require('../services/logging/auth.logger');
+const { incrementLoginOutcome } = require('../services/metrics.service');
 
 const getAuthScope = (req, user = null) => {
   const route = String(req.originalUrl || req.baseUrl || req.path || '').toLowerCase();
@@ -169,11 +172,9 @@ exports.registerDeviceToken = catchAsync(async (req, res, next) => {
   // Add device token to user
   await req.user.addDeviceToken(token, platform, deviceId);
 
-  logger.info('Device token registered', {
+  logger.auth('AUTH_DEVICE_TOKEN_REGISTERED', 'Device token registered', {
     userId: req.user._id.toString(),
-    role: req.user.role,
     platform,
-    ip: req.ip,
   });
 
   res.status(200).json({
@@ -200,10 +201,8 @@ exports.removeDeviceToken = catchAsync(async (req, res, next) => {
   // Remove device token from user
   await req.user.removeDeviceToken(token);
 
-  logger.info('Device token removed', {
+  logger.auth('AUTH_DEVICE_TOKEN_REMOVED', 'Device token removed', {
     userId: req.user._id.toString(),
-    role: req.user.role,
-    ip: req.ip,
   });
 
   res.status(200).json({
@@ -239,10 +238,8 @@ exports.register = catchAsync(async (req, res, next) => {
   // Do NOT trust client-supplied `role` or `roles` fields.
   const role = 'customer';
 
-  logger.info('Registration attempt', {
+  logger.auth('AUTH_REGISTRATION_ATTEMPT', 'User registration initiated', {
     scope,
-    ip: req.ip,
-    userAgent: req.get('user-agent') || 'unknown',
   });
 
   // Generate email from phone if not provided
@@ -255,11 +252,15 @@ exports.register = catchAsync(async (req, res, next) => {
 
   if (existingUser) {
     if (existingUser.email.address === userEmail && email) {
-      logger.warn(`[REGISTER] Failed - Email already exists: ${userEmail}`);
+      logger.auth('AUTH_REGISTRATION_FAILED', 'Registration failed: email already registered', {
+        email: userEmail,
+      });
       return next(new AppError('Email is already registered.', 400));
     }
     if (existingUser.phone.number === phone) {
-      logger.warn(`[REGISTER] Failed - Phone already exists: ${phone}`);
+      logger.auth('AUTH_REGISTRATION_FAILED', 'Registration failed: phone already registered', {
+        phone: phone.replace(/\d(?=\d{3})/g, '*'),
+      });
       return next(new AppError('Phone number is already registered.', 400));
     }
   }
@@ -310,11 +311,9 @@ exports.register = catchAsync(async (req, res, next) => {
 
   await user.save({ validateBeforeSave: false });
 
-  logger.info('Registration completed', {
+  logger.auth('AUTH_REGISTRATION_SUCCESS', 'User registered successfully', {
     userId: user._id.toString(),
-    role: user.role,
-    ip: req.ip,
-    userAgent: req.get('user-agent') || 'unknown',
+    userRole: user.role,
   });
 
   await createSendToken(user, 201, res, 'Account created successfully.');
@@ -328,19 +327,21 @@ exports.login = catchAsync(async (req, res, next) => {
   const scope = getAuthScope(req);
   const { email, password } = req.body;
 
-  logger.info('Login attempt', {
+  logger.auth('AUTH_LOGIN_ATTEMPT', 'Login attempt', {
     scope,
-    ip: req.ip,
-    userAgent: req.get('user-agent') || 'unknown',
   });
 
   // 1) Check if email/phone and password exist
   if (!email || !password) {
-    logger.warn('Login failed - missing credentials', {
+    logger.auth('AUTH_LOGIN_FAILED', 'Login failed: missing credentials', {
+      scope,
+    });
+    incrementLoginOutcome(scope, 'failed');
+    logSecurityAudit(SECURITY_EVENTS.LOGIN_FAILURE, {
+      reason: 'missing_credentials',
       scope,
       ip: req.ip,
-      userAgent: req.get('user-agent') || 'unknown',
-    });
+    }, { level: 'warn', severity: 'medium' });
     return next(new AppError('Please provide email/phone and password.', 400));
   }
 
@@ -361,15 +362,25 @@ exports.login = catchAsync(async (req, res, next) => {
 
   // 3) Check if user exists and password is correct
   if (!user || !(await user.comparePassword(password))) {
-    logger.warn('Login failed - invalid credentials', {
+    logger.auth('AUTH_LOGIN_FAILED', 'Login failed: invalid credentials', {
+      scope,
+    });
+    incrementLoginOutcome(scope, 'failed');
+    logSecurityAudit(SECURITY_EVENTS.LOGIN_FAILURE, {
+      reason: 'invalid_credentials',
       scope,
       ip: req.ip,
-      userAgent: req.get('user-agent') || 'unknown',
-    });
+    }, { level: 'warn', severity: 'high' });
     return next(new AppError('Incorrect email/phone or password.', 401));
   }
 
   if (scope === 'admin' && user.role !== 'admin') {
+    logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
+      userId: user._id.toString(),
+      role: user.role,
+      scope,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
     return next(new AppError('Access denied. Admin privileges required.', 403));
   }
 
@@ -378,21 +389,25 @@ exports.login = catchAsync(async (req, res, next) => {
   }
 
   if (user.isBlocked) {
-    logger.warn('Login blocked - user is blocked', {
+    logger.auth('AUTH_LOGIN_FAILED', 'Login failed: account blocked', {
       userId: user._id.toString(),
-      role: user.role,
-      scope,
     });
+    incrementLoginOutcome(scope, 'failed');
+    logSecurityAudit(SECURITY_EVENTS.LOGIN_FAILURE, {
+      userId: user._id.toString(),
+      reason: 'blocked_account',
+      scope,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
     return next(new AppError('Your account has been blocked. Please contact support.', 403));
   }
 
-  logger.info('Login success', {
+  logger.auth('AUTH_LOGIN_SUCCESS', 'User logged in successfully', {
     userId: user._id.toString(),
     role: user.role,
     scope,
-    ip: req.ip,
-    userAgent: req.get('user-agent') || 'unknown',
   });
+  incrementLoginOutcome(scope, 'success');
 
   await createSendToken(user, 200, res, 'Login successful!');
 });
@@ -468,10 +483,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
 
   await user.save();
 
-  logger.info(`User profile updated: ${user.email.address}`, {
-    userId: user._id.toString(),
-    updates: { name: !!name, email: !!email, phone: !!phone },
-  });
+  logger.auth('AUTH_PROFILE_UPDATED', 'User profile updated', { userId: user._id, updatedFields: Object.keys(updateData) });
 
   res.status(200).json({
     status: 'success',
@@ -496,12 +508,10 @@ exports.logout = catchAsync(async (req, res, next) => {
   clearRefreshCookie(res, scope);
   clearCsrfCookie(res, scope);
 
-  logger.info('Logout success', {
+  logger.auth('AUTH_LOGOUT', 'User logged out', {
     userId: req.user?._id?.toString(),
-    role: req.user?.role,
+    userRole: req.user?.role,
     scope,
-    ip: req.ip,
-    userAgent: req.get('user-agent') || 'unknown',
   });
 
   res.status(200).json({
@@ -584,12 +594,10 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
   setRefreshCookie(res, scope, newRefreshToken);
   const csrfToken = setCsrfCookie(res, scope);
 
-  logger.info('Token refresh success', {
+  logger.auth('AUTH_TOKEN_REFRESH', 'Access token refreshed', {
     userId: user._id.toString(),
     role: user.role,
     scope,
-    ip: req.ip,
-    userAgent: req.get('user-agent') || 'unknown',
   });
 
   res.status(200).json({
@@ -643,11 +651,11 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
   user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
   await user.save({ validateBeforeSave: false });
 
-  logger.info(`Password reset requested for: ${user.email.address}`);
+  logger.auth('AUTH_PASSWORD_RESET', 'Password reset initiated', {
+    userId: user._id.toString(),
+  });
 
   // TODO: Send email with reset link
-  const resetURL = `${req.protocol}://${req.get('host')}/api/v1/auth/reset-password/${resetToken}`;
-  logger.info(`Reset URL (TODO: send via email): ${resetURL}`);
 
   res.status(200).json({
     status: 'success',
@@ -695,7 +703,9 @@ exports.resetPassword = catchAsync(async (req, res, next) => {
   user.passwordChangedAt = Date.now();
   await user.save();
 
-  logger.info(`Password reset successful for: ${user.email.address}`);
+  logger.auth('AUTH_PASSWORD_CHANGED', 'Password changed via reset token', {
+    userId: user._id.toString(),
+  });
 
   // Log user in with new password
   createSendToken(user, 200, res, 'Password reset successful!');
@@ -727,7 +737,7 @@ exports.changePassword = catchAsync(async (req, res, next) => {
   user.passwordChangedAt = Date.now();
   await user.save();
 
-  logger.info(`Password changed for: ${user.email.address}`);
+  logger.auth('AUTH_PASSWORD_CHANGED', 'Password changed successfully', { userId: user._id });
 
   // Log user in with new password
   createSendToken(user, 200, res, 'Password changed successfully!');
@@ -757,7 +767,7 @@ exports.verifyEmail = catchAsync(async (req, res, next) => {
   user.emailVerificationToken = undefined;
   await user.save({ validateBeforeSave: false });
 
-  logger.info(`Email verified for: ${user.email.address}`);
+  logger.auth('AUTH_EMAIL_VERIFIED', 'Email verified for user', { userId: user._id });
 
   res.status(200).json({
     status: 'success',
@@ -791,7 +801,7 @@ exports.sendVerificationEmail = catchAsync(async (req, res, next) => {
 
   // TODO: Send verification email
   const verificationURL = `${req.protocol}://${req.get('host')}/api/v1/auth/verify-email/${verificationToken}`;
-  logger.info(`Verification URL (TODO: send via email): ${verificationURL}`);
+  logger.auth('AUTH_VERIFICATION_URL_GENERATED', 'Email verification URL generated', { userId: user._id }, { level: 'debug' });
 
   res.status(200).json({
     status: 'success',
@@ -824,7 +834,11 @@ exports.getMe = catchAsync(async (req, res, next) => {
  * PATCH /api/v1/auth/me
  */
 exports.updateMe = catchAsync(async (req, res, next) => {
-  logger.info(`📥 [updateMe-ACTUAL] Received body: ${JSON.stringify(req.body)}`);
+  if (process.env.NODE_ENV === 'development') {
+    logger.auth('AUTH_PROFILE_UPDATE_ATTEMPT', 'Profile update payload received', {
+      payloadKeys: Object.keys(req.body || {}),
+    }, { level: 'debug' });
+  }
   
   // Don't allow password update through this route
   if (req.body.password || req.body.passwordConfirm) {
@@ -852,16 +866,21 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     }
   });
 
-  logger.info(`📝 [updateMe-ACTUAL] Filtered updates: ${JSON.stringify(filteredBody)}`);
+  if (process.env.NODE_ENV === 'development') {
+    logger.auth('AUTH_PROFILE_UPDATE_FILTERED', 'Profile update filtered payload', {
+      payloadKeys: Object.keys(filteredBody || {}),
+    }, { level: 'debug' });
+  }
 
   // Update user
   const user = await User.findByIdAndUpdate(req.user._id, filteredBody, {
-    new: true,
+    returnDocument: 'after',
     runValidators: true,
   });
 
-  logger.info(`✅ [updateMe-ACTUAL] Updated - email: ${user.email.address}, phone: ${user.phone.number}`);
-  logger.info(`Profile updated for: ${user.email.address}`);
+  logger.auth('AUTH_PROFILE_UPDATED', 'User profile updated', {
+    userId: user._id,
+  });
 
   res.status(200).json({
     status: 'success',
@@ -969,7 +988,7 @@ exports.deleteMe = catchAsync(async (req, res, next) => {
   user.isActive = false;
   await user.save({ validateBeforeSave: false });
 
-  logger.info(`Account deactivated for: ${user.email.address}`);
+  logger.auth('AUTH_ACCOUNT_DEACTIVATED', 'User account deactivated', { userId: user._id });
 
   res.status(200).json({
     status: 'success',
@@ -995,7 +1014,7 @@ exports.registerDeviceToken = catchAsync(async (req, res, next) => {
   const user = await User.findById(req.user._id);
   await user.addDeviceToken(token, platform, deviceId);
 
-  logger.info(`Device token registered for user ${user.email.address} - Platform: ${platform}`);
+  logger.auth('AUTH_DEVICE_TOKEN_REGISTERED', 'Device token registered', { userId: user._id, platform }, { level: 'debug' });
 
   res.status(200).json({
     status: 'success',
@@ -1020,7 +1039,7 @@ exports.removeDeviceToken = catchAsync(async (req, res, next) => {
   const user = await User.findById(req.user._id);
   await user.removeDeviceToken(token);
 
-  logger.info(`Device token removed for user ${user.email.address}`);
+  logger.auth('AUTH_DEVICE_TOKEN_REMOVED', 'Device token removed', { userId: user._id });
 
   res.status(200).json({
     status: 'success',
@@ -1064,7 +1083,13 @@ exports.changePassword = catchAsync(async (req, res, next) => {
   const isPasswordCorrect = await user.comparePassword(currentPassword);
 
   if (!isPasswordCorrect) {
-    logger.warn(`Failed password change attempt for user ${user.email.address} - incorrect current password`);
+    logger.auth('AUTH_PASSWORD_CHANGE_FAILED', 'Failed password change: incorrect current password', { userId: user._id }, { severity: 'medium' });
+    logSecurityAudit(SECURITY_EVENTS.PASSWORD_CHANGE, {
+      userId: user._id.toString(),
+      outcome: 'failed',
+      reason: 'incorrect_current_password',
+      ip: req.ip,
+    }, { level: 'warn', severity: 'medium' });
     return next(new AppError('Current password is incorrect', 401));
   }
 
@@ -1072,7 +1097,12 @@ exports.changePassword = catchAsync(async (req, res, next) => {
   user.password = newPassword;
   await user.save();
 
-  logger.info(`Password changed successfully for user ${user.email.address}`);
+  logger.auth('AUTH_PASSWORD_CHANGED', 'Password changed successfully', { userId: user._id });
+  logSecurityAudit(SECURITY_EVENTS.PASSWORD_CHANGE, {
+    userId: user._id.toString(),
+    outcome: 'success',
+    ip: req.ip,
+  }, { level: 'info', severity: 'medium' });
 
   // 5) Send success response
   res.status(200).json({

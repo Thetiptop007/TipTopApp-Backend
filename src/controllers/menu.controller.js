@@ -11,7 +11,9 @@ const Category = require('../models/category.model');
 const MenuItem = require('../models/MenuItem');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
+const { BUSINESS_EVENTS, logBusinessEvent } = require('../services/logging/businessEvent.logger');
 const { invalidateCache } = require('../middlewares/cache');
+const { isProduction } = require('../config/observability');
 
 /* =====================================================
    ADMIN RELATED MENU CONTROLLERS
@@ -132,7 +134,7 @@ exports.updateAvailability = catchAsync(async (req, res, next) => {
   const item = await MenuItem.findByIdAndUpdate(
     req.params.id,
     { isAvailable },
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
 
   if (!item) {
@@ -141,6 +143,17 @@ exports.updateAvailability = catchAsync(async (req, res, next) => {
       message: 'Menu item not found'
     });
   }
+
+  logBusinessEvent(BUSINESS_EVENTS.MENU_ITEM_UPDATED, {
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: item._id.toString(),
+    entityType: 'menu_item',
+    metadata: {
+      isAvailable: item.isAvailable,
+      source: 'updateAvailability',
+    },
+  });
 
   res.status(200).json({
     status: 'success',
@@ -274,6 +287,16 @@ exports.updateMenuItem = catchAsync(async (req, res, next) => {
   if (isActive !== undefined) menuItem.isActive = isActive;
 
   await menuItem.save();
+
+  logBusinessEvent(BUSINESS_EVENTS.MENU_ITEM_UPDATED, {
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: menuItem._id.toString(),
+    entityType: 'menu_item',
+    metadata: {
+      fieldsUpdated: Object.keys(req.body || {}),
+    },
+  });
 
   res.status(200).json({
     status: 'success',
@@ -518,7 +541,10 @@ exports.getAllCategories = catchAsync(async (req, res, next) => {
     .filter(cat => cat && cat.trim() !== '' && cat !== 'All')
     .sort();
 
-  logger.info(`Fetched ${filteredCategories.length} categories: ${filteredCategories.join(', ')}`);
+  logger.business('CATEGORIES_FETCHED', 'Categories fetched', isProduction
+    ? { categoryCount: filteredCategories.length }
+    : { categoryCount: filteredCategories.length, categories: filteredCategories }
+  );
 
   res.status(200).json({
     status: 'success',
@@ -607,7 +633,7 @@ exports.permanentlyDeleteMenuItem = catchAsync(async (req, res, next) => {
     return next(new AppError('Menu item not found', 404));
   }
 
-  logger.warn(`Menu item permanently deleted: ${menuItem.name} by ${req.user.email.address}`);
+  logger.business('MENU_ITEM_DELETED', 'Menu item permanently deleted', { menuItemId: menuItem._id.toString(), menuItemName: menuItem.name, deletedBy: req.user._id.toString() }, { level: 'warn', severity: 'medium' });
 
   // Invalidate menu cache
   await invalidateCache('menu:*');
@@ -627,14 +653,14 @@ exports.restoreMenuItem = catchAsync(async (req, res, next) => {
   const menuItem = await MenuItem.findByIdAndUpdate(
     req.params.id,
     { isAvailable: true },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!menuItem) {
     return next(new AppError('Menu item not found', 404));
   }
 
-  logger.info(`Menu item restored: ${menuItem.name} by ${req.user.email.address}`);
+  logger.business('MENU_ITEM_RESTORED', 'Menu item restored', { menuItemId: menuItem._id.toString(), menuItemName: menuItem.name, restoredBy: req.user._id.toString() });
 
   res.status(200).json({
     status: 'success',

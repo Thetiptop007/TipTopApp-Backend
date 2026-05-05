@@ -100,7 +100,7 @@ function ipRateLimit(options = {}) {
 
       next();
     } catch (error) {
-      logger.error('IP rate limit error:', error.message);
+      logger.security('RATE_LIMIT_TRIGGERED', 'IP rate limit error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next();
     }
   };
@@ -132,7 +132,7 @@ function authBruteForceLimiter(options = {}) {
       const result = await store.increment(bruteKey, maxAttempts, windowMs);
 
       if (result.isLimited) {
-        logger.warn(`[BRUTE_FORCE_ATTEMPT] ip=${ip} identifier=${identifier} attempts=${result.count}`);
+        logger.security('BRUTE_FORCE_ATTEMPT', 'Brute force attempt blocked', { ip, identifier, attempts: result.count }, { level: 'warn', severity: 'high' });
 
         // Add significant abuse score
         await store.addAbuseScore(`abuse:${ip}`, 50);
@@ -162,7 +162,7 @@ function authBruteForceLimiter(options = {}) {
 
       next();
     } catch (error) {
-      logger.error('Auth brute force limiter error:', error.message);
+      logger.security('RATE_LIMIT_TRIGGERED', 'Auth brute force limiter error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next();
     }
   };

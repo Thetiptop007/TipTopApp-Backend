@@ -53,7 +53,7 @@ const cacheMiddleware = (ttl = 300, keyPrefix = 'api') => {
       const cachedData = await cache.get(cacheKey);
 
       if (cachedData) {
-        logger.debug(`Cache HIT: ${cacheKey}`);
+        logger.system('CACHE_HIT', 'Cache hit', { cacheKey }, { level: 'debug' });
         return res.status(200).json(cachedData);
       }
 
@@ -61,12 +61,12 @@ const cacheMiddleware = (ttl = 300, keyPrefix = 'api') => {
       if (pendingResponses.has(cacheKey)) {
         const pendingData = await pendingResponses.get(cacheKey);
         if (pendingData) {
-          logger.debug(`Cache IN-FLIGHT HIT: ${cacheKey}`);
+          logger.system('CACHE_IN_FLIGHT_HIT', 'Cache in-flight hit', { cacheKey }, { level: 'debug' });
           return res.status(200).json(pendingData);
         }
       }
 
-      logger.debug(`Cache MISS: ${cacheKey}`);
+      logger.system('CACHE_MISS', 'Cache miss', { cacheKey }, { level: 'debug' });
 
       let resolvePending;
       const pendingPromise = new Promise((resolve) => {
@@ -82,7 +82,7 @@ const cacheMiddleware = (ttl = 300, keyPrefix = 'api') => {
         // Only cache successful responses
         if (res.statusCode === 200) {
           cache.set(cacheKey, data, ttl).catch((err) => {
-            logger.error('Cache set error:', err);
+            logger.system('CACHE_SET_FAILED', 'Cache set failed', { cacheKey, errorMessage: err.message }, { level: 'error', severity: 'high' });
           });
         }
         resolvePending(data);
@@ -99,7 +99,7 @@ const cacheMiddleware = (ttl = 300, keyPrefix = 'api') => {
 
       next();
     } catch (error) {
-      logger.error('Cache middleware error:', error);
+      logger.system('CACHE_MIDDLEWARE_ERROR', 'Cache middleware error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next();
     }
   };
@@ -112,9 +112,9 @@ const cacheMiddleware = (ttl = 300, keyPrefix = 'api') => {
 const invalidateCache = async (pattern) => {
   try {
     await cache.delPattern(pattern);
-    logger.info(`Cache invalidated: ${pattern}`);
+    logger.system('CACHE_INVALIDATED', 'Cache invalidated', { pattern }, { level: 'info' });
   } catch (error) {
-    logger.error('Cache invalidation error:', error);
+    logger.system('CACHE_MIDDLEWARE_ERROR', 'Cache invalidation error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
   }
 };
 
@@ -125,9 +125,9 @@ const invalidateCache = async (pattern) => {
 const invalidateCacheKey = async (key) => {
   try {
     await cache.del(key);
-    logger.info(`Cache key invalidated: ${key}`);
+    logger.system('CACHE_KEY_INVALIDATED', 'Cache key invalidated', { key }, { level: 'info' });
   } catch (error) {
-    logger.error('Cache key invalidation error:', error);
+    logger.system('CACHE_MIDDLEWARE_ERROR', 'Cache key invalidation error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
   }
 };
 

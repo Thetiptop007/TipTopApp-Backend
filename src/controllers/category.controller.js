@@ -128,7 +128,7 @@ exports.updateCategory = catchAsync(async (req, res, next) => {
   const category = await Category.findByIdAndUpdate(
     req.params.id,
     { name, description, isActive, color },
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
 
   if (!category) {
@@ -160,7 +160,7 @@ exports.deleteCategory = catchAsync(async (req, res, next) => {
   const itemCount = await MenuItem.countDocuments({ categories: category.name });
 
   if (itemCount > 0) {
-    logger.warn(`[Category Delete] Cannot delete category \"${category.name}\" with ${itemCount} associated items`);
+    logger.business('CATEGORY_DELETE_BLOCKED', 'Category delete blocked because menu items are associated', { categoryId: category._id.toString(), categoryName: category.name, itemCount }, { level: 'warn', severity: 'medium' });
     
     return next(
       new AppError(
@@ -170,7 +170,7 @@ exports.deleteCategory = catchAsync(async (req, res, next) => {
     );
   }
   
-  logger.info(`[Category Delete] Deleting category: ${category.name} (No items associated)`);
+  logger.business('CATEGORY_DELETED', 'Category deleted', { categoryId: category._id.toString(), categoryName: category.name, itemCount }, { level: 'info' });
 
   await category.deleteOne();
 

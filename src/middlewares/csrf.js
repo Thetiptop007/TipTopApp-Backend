@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
+const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/securityAudit.logger');
 
 const getCsrfCookieName = (scope) => `${scope}CsrfToken`;
 
@@ -47,8 +48,6 @@ const requireCsrf = (scope) => (req, res, next) => {
         hasCookieToken: !!cookieToken,
         hasHeaderToken: !!headerToken,
         cookieKeys: Object.keys(req.cookies || {}),
-        cookieTokenPreview: cookieToken ? `${cookieToken.slice(0, 8)}...` : null,
-        headerTokenPreview: headerToken ? `${headerToken.slice(0, 8)}...` : null,
         userAgent: req.get('user-agent') || 'unknown',
         ip: req.ip,
       })}`
@@ -56,6 +55,16 @@ const requireCsrf = (scope) => (req, res, next) => {
   }
 
   if (!cookieToken || !headerToken || cookieToken !== headerToken) {
+    logSecurityAudit(SECURITY_EVENTS.CSRF_FAILURE, {
+      scope,
+      method: req.method,
+      url: req.originalUrl,
+      cookiePresent: !!cookieToken,
+      headerPresent: !!headerToken,
+      ip: req.ip,
+      userAgent: req.get('user-agent') || 'unknown',
+    }, { level: 'warn', severity: 'high' });
+
     if (process.env.NODE_ENV !== 'production') {
       logger.warn(
         `[CSRF mismatch] ${JSON.stringify({
@@ -66,8 +75,6 @@ const requireCsrf = (scope) => (req, res, next) => {
           cookiePresent: !!cookieToken,
           headerPresent: !!headerToken,
           cookieMatchHeader: !!cookieToken && !!headerToken ? cookieToken === headerToken : false,
-          cookieTokenPreview: cookieToken ? `${cookieToken.slice(0, 8)}...` : null,
-          headerTokenPreview: headerToken ? `${headerToken.slice(0, 8)}...` : null,
           cookieKeys: Object.keys(req.cookies || {}),
           routeParams: req.params,
           bodyKeys: Object.keys(req.body || {}),

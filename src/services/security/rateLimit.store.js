@@ -25,10 +25,10 @@ class RateLimitStore {
     };
 
     if (!this.useRedis) {
-      logger.warn('[SECURITY] Using in-memory rate limiting (not recommended for production)');
+      logger.system('RATE_LIMIT_FALLBACK_MEMORY', 'Using in-memory rate limiting (not recommended for production)', {}, { level: 'warn', severity: 'high' });
       this._startMemoryCleanup();
     } else {
-      logger.info('[SECURITY] Using Redis-backed rate limiting');
+      logger.system('RATE_LIMIT_BACKEND_SELECTED', 'Using Redis-backed rate limiting', { backend: 'Redis' });
     }
   }
 

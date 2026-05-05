@@ -3,6 +3,7 @@ const User = require('../models/User');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
+const { BUSINESS_EVENTS, logBusinessEvent } = require('../services/logging/businessEvent.logger');
 
 /**
  * @desc    Initialize settings (create if not exists)
@@ -29,7 +30,7 @@ exports.initializeSettings = catchAsync(async (req, res, next) => {
           closureReason: ''
         }
       });
-      logger.info('✅ Settings initialized successfully');
+      logger.system('SETTINGS_INIT', 'Settings initialized successfully');
     }
 
     res.status(200).json({
@@ -56,7 +57,7 @@ exports.getSettings = catchAsync(async (req, res, next) => {
     
     // If no settings exist, create default ones
     if (!settings) {
-      logger.warn('⚠️ No settings found, creating default settings...');
+      logger.system('SETTINGS_INIT_DEFAULT', 'No settings found, creating default settings', {}, { level: 'warn', severity: 'medium' });
       settings = await Settings.create({
         singleton: true,
         siteName: 'ThéTipTop',
@@ -71,7 +72,7 @@ exports.getSettings = catchAsync(async (req, res, next) => {
           closureReason: ''
         }
       });
-      logger.info('✅ Default settings created');
+      logger.system('SETTINGS_CREATED', 'Default settings created');
     }
 
     res.status(200).json({
@@ -134,6 +135,16 @@ exports.updateSettings = catchAsync(async (req, res, next) => {
 
   await settings.save();
 
+  logBusinessEvent(BUSINESS_EVENTS.SETTINGS_CHANGED, {
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: settings._id.toString(),
+    entityType: 'settings',
+    metadata: {
+      fieldsUpdated: Object.keys(req.body || {}),
+    },
+  });
+
   res.status(200).json({
     success: true,
     message: 'Settings updated successfully',
@@ -167,6 +178,18 @@ exports.toggleShopStatus = catchAsync(async (req, res, next) => {
 
   await settings.save();
 
+  logBusinessEvent(BUSINESS_EVENTS.SETTINGS_CHANGED, {
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: settings._id.toString(),
+    entityType: 'settings',
+    metadata: {
+      isOpen,
+      closureReason: !isOpen ? (closureReason || '') : '',
+      source: 'toggleShopStatus',
+    },
+  });
+
   logger.info(`🏪 Shop status changed to ${isOpen ? 'OPEN' : 'CLOSED'} by ${settings.shopStatus.lastUpdatedBy}${!isOpen && closureReason ? ` - Reason: ${closureReason}` : ''}`);
 
   res.status(200).json({
@@ -189,7 +212,7 @@ exports.getShopStatus = catchAsync(async (req, res, next) => {
     
     // If no settings exist, create default ones
     if (!settings) {
-      logger.warn('⚠️ No settings found, creating default settings for shop status...');
+      logger.system('SETTINGS_INIT_DEFAULT', 'No settings found, creating default settings for shop status', {}, { level: 'warn', severity: 'medium' });
       settings = await Settings.create({
         singleton: true,
         shopStatus: {

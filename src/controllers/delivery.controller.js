@@ -14,13 +14,12 @@ const logger = require('../utils/logger');
 exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
   const { name, email, phone, password, vehicleType } = req.body;
 
-  logger.info('\n========== DELIVERY PARTNER REGISTRATION ==========');
-  logger.info(`[REGISTER] Received data:`);
-  logger.info(`  - Name: ${name}`);
-  logger.info(`  - Email: ${email}`);
-  logger.info(`  - Phone: ${phone}`);
-  logger.info(`  - Password length: ${password ? password.length : 0}`);
-  logger.info(`  - Vehicle Type: ${vehicleType}`);
+  logger.auth('AUTH_REGISTRATION_ATTEMPT', 'Delivery partner registration attempted', {
+    name,
+    email,
+    phone,
+    vehicleType,
+  }, { level: 'debug' });
 
   // Validate required fields
   if (!name || !email || !phone || !password || !vehicleType) {
@@ -29,7 +28,7 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
 
   // Normalize phone number - remove +91 prefix for consistent storage
   const normalizedPhone = phone.replace(/^\+91/, '');
-  logger.info(`  - Normalized Phone: ${normalizedPhone}`);
+  logger.auth('AUTH_REGISTRATION_ATTEMPT', 'Delivery partner phone normalized', { normalizedPhone }, { level: 'debug' });
 
   // SECURITY FIX: Check if BOTH email AND phone match to prevent account takeover
   // First, check if exact match exists (same email AND phone)
@@ -59,9 +58,12 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
   // CRITICAL SECURITY CHECK: Prevent cross-account contamination
   // If email and phone belong to different accounts, reject
   if (emailExists && phoneExists && !emailExists._id.equals(phoneExists._id)) {
-    logger.error(`[REGISTER] SECURITY ALERT - Email and phone belong to different users!`);
-    logger.error(`  - Email ${email} belongs to user: ${emailExists._id} (${emailExists.email.address})`);
-    logger.error(`  - Phone ${normalizedPhone} belongs to user: ${phoneExists._id} (${phoneExists.email.address})`);
+    logger.security('UNAUTHORIZED_ACCESS', 'Delivery registration blocked: email and phone belong to different users', {
+      email,
+      emailUserId: emailExists._id.toString(),
+      phone: normalizedPhone,
+      phoneUserId: phoneExists._id.toString(),
+    }, { level: 'error', severity: 'critical' });
     
     await AuditLog.create({
       userId: phoneExists._id,
@@ -92,10 +94,11 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
 
   // ADDITIONAL CHECK: If only phone exists (with different email), require exact match
   if (phoneExists && !exactMatch) {
-    logger.error(`[REGISTER] SECURITY ALERT - Phone number already registered to another account!`);
-    logger.error(`  - Attempted phone: ${normalizedPhone}`);
-    logger.error(`  - Phone belongs to: ${phoneExists._id} (${phoneExists.email.address})`);
-    logger.error(`  - Attempted email: ${email} (does not match existing account)`);
+    logger.security('UNAUTHORIZED_ACCESS', 'Delivery registration blocked: phone already registered', {
+      attemptedPhone: normalizedPhone,
+      phoneUserId: phoneExists._id.toString(),
+      attemptedEmail: email,
+    }, { level: 'error', severity: 'critical' });
     
     await AuditLog.create({
       userId: phoneExists._id,
@@ -125,10 +128,11 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
 
   // ADDITIONAL CHECK: If only email exists (with different phone), require exact match
   if (emailExists && !exactMatch) {
-    logger.error(`[REGISTER] SECURITY ALERT - Email already registered to another account!`);
-    logger.error(`  - Attempted email: ${email}`);
-    logger.error(`  - Email belongs to: ${emailExists._id} (${emailExists.phone.number})`);
-    logger.error(`  - Attempted phone: ${normalizedPhone} (does not match existing account)`);
+    logger.security('UNAUTHORIZED_ACCESS', 'Delivery registration blocked: email already registered', {
+      attemptedEmail: email,
+      emailUserId: emailExists._id.toString(),
+      attemptedPhone: normalizedPhone,
+    }, { level: 'error', severity: 'critical' });
     
     await AuditLog.create({
       userId: emailExists._id,
@@ -159,16 +163,21 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
   let deliveryPartner;
 
   if (exactMatch) {
-    logger.info(`[REGISTER] Active user found with matching email AND phone - Email: ${exactMatch.email.address}, Phone: ${exactMatch.phone.number}`);
+    logger.auth('AUTH_REGISTRATION_SUCCESS', 'Delivery partner registration matched existing user', {
+      userId: exactMatch._id.toString(),
+      email: exactMatch.email.address,
+      phone: exactMatch.phone.number,
+      vehicleType,
+    });
     
     // Check if user already has delivery role
     if (exactMatch.roles && exactMatch.roles.includes('delivery')) {
-      logger.warn(`[REGISTER] User already has delivery role`);
+      logger.auth('AUTH_ACCESS_DENIED', 'Delivery partner already has delivery role', { userId: exactMatch._id.toString() }, { level: 'warn', severity: 'medium' });
       return next(new AppError('User is already registered as a delivery partner', 400));
     }
 
     // Safe to add delivery role - same person
-    logger.info(`[REGISTER] Adding delivery role to existing user`);
+    logger.auth('AUTH_REGISTRATION_SUCCESS', 'Delivery role added to existing user', { userId: exactMatch._id.toString(), vehicleType });
     exactMatch.addRole('delivery');
     
     // Update delivery data
@@ -209,10 +218,10 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
       status: 'SUCCESS'
     });
     
-    logger.info(`[REGISTER] SUCCESS - Delivery role added to existing user:`);
+    logger.auth('AUTH_REGISTRATION_SUCCESS', 'Delivery partner role added to existing user', { userId: exactMatch._id.toString(), vehicleType });
   } else {
     // Create new delivery partner
-    logger.info(`[REGISTER] Creating new delivery partner`);
+    logger.auth('AUTH_REGISTRATION_ATTEMPT', 'Creating new delivery partner', { email, phone: normalizedPhone, vehicleType }, { level: 'debug' });
     
     // Parse name properly - avoid duplication
     const nameParts = name.trim().split(' ');
@@ -247,7 +256,7 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
       },
     });
 
-    logger.info(`[REGISTER] SUCCESS - Delivery partner created:`);
+    logger.auth('AUTH_REGISTRATION_SUCCESS', 'New delivery partner created', { userId: deliveryPartner._id.toString(), vehicleType });
     
     // AUDIT LOG: New delivery partner account
     await AuditLog.create({
@@ -271,14 +280,14 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
       status: 'SUCCESS'
     });
   }
-  logger.info(`  - ID: ${deliveryPartner._id}`);
-  logger.info(`  - Name: ${deliveryPartner.name.first} ${deliveryPartner.name.last}`);
-  logger.info(`  - Email: ${deliveryPartner.email.address}`);
-  logger.info(`  - Phone: ${deliveryPartner.phone.number}`);
-  logger.info(`  - Role: ${deliveryPartner.role}`);
-  logger.info(`  - Vehicle: ${vehicleType}`);
-  logger.info(`  - Password saved: ${deliveryPartner.password ? 'YES (hashed)' : 'NO'}`);
-  logger.info('====================================================\n');
+  logger.auth('AUTH_REGISTRATION_SUCCESS', 'Delivery partner registration completed', {
+    userId: deliveryPartner._id.toString(),
+    name: `${deliveryPartner.name.first} ${deliveryPartner.name.last}`.trim(),
+    email: deliveryPartner.email.address,
+    phone: deliveryPartner.phone.number,
+    userRole: deliveryPartner.role,
+    vehicleType,
+  });
 
   res.status(201).json({
     status: 'success',
@@ -975,13 +984,7 @@ exports.getDeliveryStats = catchAsync(async (req, res, next) => {
  * Delivery agent only
  */
 exports.getAvailableOrders = catchAsync(async (req, res, next) => {
-  logger.info(`
-================================
-===== GET AVAILABLE ORDERS =====
-================================
-🚚 Delivery Agent: ${req.user.email}
-🔍 Searching for: status=READY, orderType=DELIVERY, unassigned
-================================`);
+  logger.business('DELIVERY_FETCH_AVAILABLE', 'Delivery agent fetching available orders', { agentEmail: req.user.email }, { level: 'debug' });
 
   try {
     // Get all ready orders that are not assigned yet
@@ -994,11 +997,7 @@ exports.getAvailableOrders = catchAsync(async (req, res, next) => {
       .sort({ createdAt: 1 }) // Older orders first
       .lean(); // Convert to plain JavaScript objects
 
-    logger.info(`✅ Found ${availableOrders.length} available orders for delivery agents`);
-    
-    if (availableOrders.length > 0) {
-      logger.info(`📦 Available Order Numbers: ${availableOrders.map(o => o.orderNumber).join(', ')}`);
-    }
+    logger.business('ORDER_AVAILABLE_FOR_DELIVERY', 'Available orders found for delivery agents', { orderCount: availableOrders.length, orderNumbers: availableOrders.map(o => o.orderNumber) });
 
     res.status(200).json({
       status: 'success',
@@ -1008,7 +1007,7 @@ exports.getAvailableOrders = catchAsync(async (req, res, next) => {
       },
     });
   } catch (error) {
-    logger.error(`❌ Error fetching available orders: ${error.message}`);
+    logger.business('ORDER_FETCH_FAILED', 'Error fetching available orders for delivery', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     logger.error(`Stack: ${error.stack}`);
     return next(new AppError('Error fetching available orders', 500));
   }
@@ -1029,17 +1028,14 @@ exports.claimOrder = catchAsync(async (req, res, next) => {
     return next(new AppError('You must be available to claim orders', 400));
   }
 
-  logger.info(`
-================================
-===== CLAIM ORDER REQUEST =====
-================================
-📦 Order ID: ${orderId}
-🚚 Delivery Agent: ${deliveryAgent.email}
-👤 Agent Name: ${deliveryAgent.name.first} ${deliveryAgent.name.last}
-📱 Agent Phone: ${deliveryAgent.phone.number}
-🏍️  Vehicle: ${deliveryAgent.deliveryData.vehicleInfo.number || 'N/A'}
-🔒 Using atomic operation to prevent race conditions
-================================`);
+  logger.business('DELIVERY_ORDER_CLAIM_ATTEMPT', 'Delivery agent attempting to claim order', {
+    orderId,
+    agentId: deliveryAgent._id,
+    agentEmail: deliveryAgent.email,
+    agentName: `${deliveryAgent.name.first} ${deliveryAgent.name.last}`,
+    agentPhone: deliveryAgent.phone.number,
+    vehicleNumber: deliveryAgent.deliveryData.vehicleInfo.number || 'N/A'
+  }, { level: 'debug' });
 
   // Find the order with atomic operation to prevent race condition
   let order;
@@ -1070,32 +1066,30 @@ exports.claimOrder = catchAsync(async (req, res, next) => {
           },
         },
       },
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
   } catch (updateError) {
-    logger.error(`❌ Error updating order: ${updateError.message}`);
+    logger.business('ORDER_UPDATE_FAILED', 'Error updating order during delivery claim', { errorMessage: updateError.message }, { level: 'error', severity: 'high' });
     logger.error(`Stack: ${updateError.stack}`);
     return next(new AppError('Error claiming order', 500));
   }
 
   // If order is null, it means another agent claimed it or it's not available
   if (!order) {
-    logger.warn(`⚠️  RACE CONDITION DETECTED! Order ${orderId} already claimed or not available`);
+    logger.security('RACE_CONDITION_DETECTED', 'Order race condition: already claimed or not available', { orderId }, { severity: 'high' });
     return next(new AppError('Order is no longer available or has already been claimed by another agent', 409));
   }
 
-  logger.info(`✅ Order ${order.orderNumber} successfully claimed!`);
-  logger.info(`📋 Status: READY → OUT_FOR_DELIVERY`);
-  logger.info(`🔍 CLAIMED ORDER DETAILS:`);
-  logger.info(`   - Order ID: ${order._id}`);
-  logger.info(`   - Order Number: ${order.orderNumber}`);
-  logger.info(`   - Status: ${order.status}`);
-  logger.info(`   - Delivery Partner ID: ${order.deliveryPartner?.id}`);
-  logger.info(`   - Delivery Partner Name: ${order.deliveryPartner?.name}`);
-  logger.info(`   - Delivery Partner Phone: ${order.deliveryPartner?.phone}`);
-  logger.info(`   - Assigned At: ${order.deliveryPartner?.assignedAt}`);
-  logger.info(`   - Picked Up At: ${order.deliveryPartner?.pickedUpAt}`);
-  logger.info(`================================`);
+  logger.business('ORDER_CLAIMED', 'Order successfully claimed by delivery agent', {
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    status: order.status,
+    deliveryPartnerId: order.deliveryPartner?.id,
+    deliveryPartnerName: order.deliveryPartner?.name,
+    deliveryPartnerPhone: order.deliveryPartner?.phone,
+    assignedAt: order.deliveryPartner?.assignedAt,
+    pickedUpAt: order.deliveryPartner?.pickedUpAt
+  });
 
   try {
     logger.info(`📤 Emitting socket notification to customer: ${order.customer.id}`);
@@ -1122,7 +1116,7 @@ exports.claimOrder = catchAsync(async (req, res, next) => {
     });
   } catch (socketError) {
     // Log socket errors but don't fail the request
-    logger.error(`⚠️  Socket notification error: ${socketError.message}`);
+    logger.system('SOCKET_NOTIFICATION_ERROR', 'Socket notification error', { errorMessage: socketError.message }, { level: 'error', severity: 'medium' });
   }
 
   res.status(200).json({

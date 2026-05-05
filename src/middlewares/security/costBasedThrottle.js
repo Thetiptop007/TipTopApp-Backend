@@ -67,7 +67,7 @@ function refreshTokenRateLimit(options = {}) {
 
       next();
     } catch (error) {
-      logger.error('Refresh token rate limit error:', error.message);
+      logger.security('RATE_LIMIT_TRIGGERED', 'Refresh token rate limit error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next();
     }
   };
@@ -125,7 +125,7 @@ function costBasedThrottle(options = {}) {
 
       next();
     } catch (error) {
-      logger.error('Cost-based throttle error:', error.message);
+      logger.security('RATE_LIMIT_TRIGGERED', 'Cost-based throttle error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next();
     }
   };
@@ -191,7 +191,7 @@ function detectDistributedAbuse(options = {}) {
 
       next();
     } catch (error) {
-      logger.error('Distributed abuse detection error:', error.message);
+      logger.security('ABUSE_PATTERN_DETECTED', 'Distributed abuse detection error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next();
     }
   };

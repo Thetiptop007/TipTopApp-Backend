@@ -30,12 +30,12 @@ class EmailService {
 
   initialize() {
     if (!process.env.RESEND_API_KEY) {
-      logger.warn('⚠️  RESEND_API_KEY not configured. Critical error emails disabled.');
+      logger.system('EMAIL_RESEND_API_KEY_MISSING', 'RESEND_API_KEY not configured; critical error emails disabled', {}, { level: 'warn', severity: 'medium' });
       return;
     }
 
     if (!this.developerEmail) {
-      logger.warn('⚠️  DEVELOPER_EMAIL not configured. Critical error emails disabled.');
+      logger.system('EMAIL_DEVELOPER_MISSING', 'DEVELOPER_EMAIL not configured; critical error emails disabled', {}, { level: 'warn', severity: 'medium' });
       return;
     }
 
@@ -43,7 +43,7 @@ class EmailService {
       this.client = new Resend(process.env.RESEND_API_KEY);
       this.enabled = true;
     } catch (error) {
-      logger.error('❌ Failed to initialize email service:', error.message);
+      logger.system('EMAIL_INIT_FAILED', 'Failed to initialize email service', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     }
   }
 
@@ -53,17 +53,17 @@ class EmailService {
    */
   async sendErrorNotification(error, context = {}) {
     if (!this.enabled) {
-      logger.warn('⚠️  Email service disabled. Cannot send error notification.');
+      logger.system('EMAIL_SERVICE_DISABLED', 'Email service disabled; cannot send error notification', {}, { level: 'warn', severity: 'medium' });
       return false;
     }
 
     if (!this.developerEmail) {
-      logger.warn('⚠️  DEVELOPER_EMAIL not configured. Skipping error notification.');
+      logger.system('EMAIL_DEVELOPER_MISSING_SKIP', 'DEVELOPER_EMAIL not configured; skipping error notification', {}, { level: 'warn', severity: 'medium' });
       return false;
     }
 
     try {
-      logger.info('📧 Sending critical error notification to developer');
+      logger.system('EMAIL_SENDING_ERROR_NOTIFICATION', 'Sending critical error notification to developer');
 
       const errorDetails = {
         message: error.message || 'Unknown error',
@@ -162,10 +162,10 @@ class EmailService {
         html: htmlContent,
       });
 
-      logger.info(`✅ Error notification sent to ${this.developerEmail}. ID: ${result.id || result.data?.id || 'unknown'}`);
+      logger.system('EMAIL_SENT', 'Error notification sent to developer', { to: this.developerEmail, id: result.id || result.data?.id || 'unknown' });
       return true;
     } catch (emailError) {
-      logger.error('❌ Failed to send error notification:', emailError.message);
+      logger.system('EMAIL_SEND_FAILED', 'Failed to send error notification', { errorMessage: emailError?.message || String(emailError) }, { level: 'error', severity: 'high' });
       return false;
     }
   }

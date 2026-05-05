@@ -63,7 +63,7 @@ function userRateLimit(options = {}) {
 
       next();
     } catch (error) {
-      logger.error('User rate limit error:', error.message);
+      logger.security('RATE_LIMIT_TRIGGERED', 'User rate limit error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next();
     }
   };
@@ -97,7 +97,7 @@ function adminRateLimit(options = {}) {
       const result = await store.increment(adminKey, limit, windowMs);
 
       if (result.isLimited) {
-        logger.warn(`[ADMIN_RATE_LIMIT] userId=${req.user._id} path=${req.path} attempts=${result.count}`);
+        logger.security('ADMIN_RATE_LIMIT_TRIGGERED', 'Admin rate limit triggered', { userId: req.user._id.toString(), path: req.path, attempts: result.count }, { level: 'warn', severity: 'high' });
 
         return res.status(429).json({
           status: 'fail',
@@ -107,7 +107,7 @@ function adminRateLimit(options = {}) {
 
       next();
     } catch (error) {
-      logger.error('Admin rate limit error:', error.message);
+      logger.security('RATE_LIMIT_TRIGGERED', 'Admin rate limit error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next();
     }
   };

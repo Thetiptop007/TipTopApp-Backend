@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 
 const DEFAULT_DEV_MONGO_URI = 'mongodb://127.0.0.1:27017/tiptop_dev';
+const shouldEnableMongoDebug = String(process.env.MONGOOSE_DEBUG || '').toLowerCase() === 'true';
 
 const maskMongoUri = (uri) => {
   try {
@@ -48,6 +49,14 @@ const buildMongoCandidates = () => {
   return [...new Set(candidates.filter(Boolean))];
 };
 
+const shouldEnableRetryWrites = (uri) => {
+  if (String(process.env.MONGO_RETRY_WRITES || '').toLowerCase() === 'true') {
+    return true;
+  }
+
+  return /replicaSet=|mongodb\+srv:/.test(String(uri || ''));
+};
+
 /**
  * Connect to MongoDB, falling back to local development URIs when needed.
  */
@@ -64,36 +73,50 @@ const connectDB = async () => {
       const conn = await mongoose.connect(uri, {
         serverSelectionTimeoutMS: 5000,
         socketTimeoutMS: 45000,
-        retryWrites: true,
+        retryWrites: shouldEnableRetryWrites(uri),
         w: 'majority',
       });
 
-      logger.info(`✅ MongoDB Connected: ${conn.connection.host}:${conn.connection.port}/${conn.connection.name}`);
+      logger.db('DB_CONNECTED', 'Database connection established', {
+        host: conn.connection.host,
+        port: conn.connection.port,
+        database: conn.connection.name,
+      });
 
-      if (process.env.NODE_ENV === 'development') {
+      if (process.env.NODE_ENV === 'development' && shouldEnableMongoDebug) {
         mongoose.set('debug', (collectionName, method, query, doc) => {
           try {
-            logger.info(`[MONGODB_DEBUG] ${collectionName}.${method} ${JSON.stringify(query)} ${doc ? JSON.stringify(doc) : ''}`);
+            logger.db('DB_QUERY', 'MongoDB debug query executed', {
+              collectionName,
+              method,
+              query,
+              doc: doc || null,
+            }, { level: 'debug' });
           } catch (err) {
-            logger.info(`[MONGODB_DEBUG] ${collectionName}.${method} (could not stringify query)`);
+            logger.db('DB_QUERY', 'MongoDB debug query executed', {
+              collectionName,
+              method,
+              querySummary: 'could not stringify query',
+            }, { level: 'debug' });
           }
         });
+        logger.db('DB_DEBUG_ENABLED', 'MongoDB debug logging enabled', {}, { level: 'debug' });
       }
 
       // Connection event handlers - only log critical events
       let reconnectAttempts = 0;
 
       mongoose.connection.on('error', (err) => {
-        logger.error(`❌ MongoDB connection error: ${err.message}`);
+        logger.db('DB_ERROR', 'MongoDB connection error', { errorMessage: err.message }, { level: 'error' });
       });
 
       mongoose.connection.on('disconnected', () => {
         reconnectAttempts++;
-        logger.warn(`⚠️  MongoDB disconnected (attempt ${reconnectAttempts}). Mongoose will attempt to reconnect...`);
+        logger.db('DB_DISCONNECTED', 'MongoDB disconnected; attempting reconnect', { attempt: reconnectAttempts }, { level: 'warn' });
       });
 
       mongoose.connection.on('reconnected', () => {
-        logger.info('✅ MongoDB reconnected successfully');
+        logger.db('DB_RECONNECTED', 'MongoDB reconnected successfully');
         reconnectAttempts = 0;
       });
 
@@ -101,15 +124,17 @@ const connectDB = async () => {
       return conn;
     } catch (error) {
       lastError = error;
-      logger.warn(`⚠️  MongoDB connection failed for ${maskMongoUri(uri)}: ${getMongoConnectionFailureReason(error)}`);
+      logger.db('DB_CONNECT_FAILED_URI', 'MongoDB connection failed for candidate', { uri: maskMongoUri(uri), reason: getMongoConnectionFailureReason(error) }, { level: 'warn' });
 
       if (error?.stack) {
-        logger.debug(`MongoDB connection stack for ${maskMongoUri(uri)}:\n${error.stack}`);
+        logger.db('DB_CONNECT_FAILED', 'MongoDB connection stack captured', {
+          uri: maskMongoUri(uri),
+          stack: error.stack,
+        }, { level: 'debug' });
       }
     }
   }
-
-  logger.error('❌ All MongoDB connection attempts failed. Available URIs:', candidates.length);
+  logger.db('DB_ALL_ATTEMPTS_FAILED', 'All MongoDB connection attempts failed', { candidatesCount: candidates.length }, { level: 'error' });
   throw lastError;
 };
 
@@ -119,9 +144,9 @@ const connectDB = async () => {
 const closeDB = async () => {
   try {
     await mongoose.connection.close();
-    logger.info('✅ MongoDB connection closed');
+    logger.db('DB_CONNECTION_CLOSED', 'MongoDB connection closed');
   } catch (error) {
-    logger.error(`Error closing MongoDB connection: ${error.message}`);
+    logger.db('DB_CLOSE_ERROR', 'Error closing MongoDB connection', { errorMessage: error.message }, { level: 'error' });
   }
 };
 

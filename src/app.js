@@ -5,15 +5,15 @@ const cors = require('cors');
 const mongoSanitize = require('express-mongo-sanitize');
 const xss = require('xss-clean');
 const compression = require('compression');
-const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
-const rateLimit = require('express-rate-limit');
 const logger = require('./utils/logger');
 const AppError = require('./utils/AppError');
 const { errorHandler } = require('./middlewares/errorHandler.middleware');
-const cache = require('./utils/cache');
+const { requestContextMiddleware } = require('./middlewares/requestContext.middleware');
+const { metricsHandler } = require('./services/metrics.service');
 const suspiciousRequests = require('./middlewares/suspiciousRequests');
-const { getSecurityMiddlewareStack, initializeSecurityLayers } = require('./services/security.service');
+const { logSecurityAudit } = require('./services/logging/securityAudit.logger');
+const { getSecurityMiddlewareStack } = require('./services/security.service');
 
 const app = express();
 const isProduction = process.env.NODE_ENV === 'production';
@@ -21,17 +21,11 @@ const isProduction = process.env.NODE_ENV === 'production';
 // Do not expose Express fingerprint header
 app.disable('x-powered-by');
 
-morgan.format('tiptop-dev', ':method :url :status :response-time[0]ms');
-morgan.format('tiptop-prod', ':remote-addr - - [:date[clf]] ":method :url HTTP/:http-version" :status');
-
-// In-memory cache is ready to use (no connection needed)
-logger.info('In-memory cache system initialized');
-
-// Initialize layered security layers (Redis + rate limiting)
-initializeSecurityLayers().catch(err => logger.error('Security init error:', err.message));
-
 // Trust proxy (important for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);
+
+// Request context + structured request logs
+app.use(requestContextMiddleware);
 
 // Security HTTP headers
 app.use(
@@ -79,9 +73,13 @@ const corsOptions = {
       callback(null, true);
     } else {
       if (process.env.NODE_ENV === 'development') {
-        logger.info(`✅ [CORS] Allowed origin: ${origin}`);
+        logger.system('CORS_ORIGIN_ALLOWED_WITH_DEBUG_OVERRIDE', 'CORS origin allowed in development override', {
+          origin,
+        });
       } else {
-        logger.warn(`⚠️  [CORS] Unknown origin (allowed for debugging): ${origin}`);
+        logger.system('CORS_ORIGIN_ALLOWED_WITH_OVERRIDE', 'Unknown origin allowed by override', {
+          origin,
+        }, { level: 'warn', severity: 'medium' });
       }
       callback(null, true); // Temporarily allow all origins for debugging
     }
@@ -105,13 +103,6 @@ app.options('*', cors(corsOptions));
 // - User-based limits for authenticated users
 // - Admin-specific stricter limits
 app.use('/api', ...getSecurityMiddlewareStack());
-
-// HTTP request logger
-if (process.env.NODE_ENV === 'development') {
-  app.use(morgan('tiptop-dev'));
-} else {
-  app.use(morgan('tiptop-prod'));
-}
 
 // Body parser
 app.use(express.json({ limit: '10mb' }));
@@ -149,6 +140,9 @@ app.get('/health', (req, res) => {
     environment: process.env.NODE_ENV,
   });
 });
+
+// Prometheus metrics endpoint
+app.get('/metrics', metricsHandler);
 
 // Root route for platform probes (Render often checks "/")
 app.get('/', (req, res) => {
@@ -222,7 +216,12 @@ const getClientIp = require('./utils/getClientIp');
 app.all('*', (req, res, next) => {
   const ip = getClientIp(req) || 'unknown';
   if (req.originalUrl && req.originalUrl.startsWith('/api')) {
-    logger.warn(`[SUSPICIOUS_REQUEST] 404 for API path method=${req.method} url=${req.originalUrl} ip=${ip} ua=${req.get('user-agent') || ''}`);
+    logSecurityAudit('API_ROUTE_NOT_FOUND', {
+      method: req.method,
+      originalUrl: req.originalUrl,
+      ip,
+      userAgent: req.get('user-agent') || '',
+    }, { level: 'warn', severity: 'medium' });
   }
   // Do not leak requested URL or framework details
   next(new AppError('Route not found', 404));

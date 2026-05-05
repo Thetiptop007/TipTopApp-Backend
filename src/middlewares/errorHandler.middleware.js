@@ -1,5 +1,6 @@
 const { notifyCriticalError, isCriticalError } = require('../utils/errorNotification');
 const logger = require('../utils/logger');
+const { LOG_EVENTS } = require('../constants/log-events');
 
 /**
  * Global error handler middleware
@@ -12,29 +13,29 @@ const errorHandler = (err, req, res, next) => {
   // Only log critical errors (5xx) in production
   if (process.env.NODE_ENV === 'production') {
     if (isCritical) {
-      logger.error('🔴 CRITICAL ERROR (5xx)', {
+      logger.system('CRITICAL_ERROR_5XX', 'Critical server error', {
         message: err.message,
         method: req.method,
         url: req.originalUrl,
         statusCode,
         name: err.name,
-      });
+      }, { level: 'error', severity: 'high' });
     }
     // Don't log 4xx errors in production (too noisy)
   } else {
     // Log all errors in development
-    logger.error('Error caught by global handler:', {
+    logger.system(LOG_EVENTS.SYSTEM.ERROR_CAUGHT_GLOBAL, 'Global error captured', {
       message: err.message,
       stack: err.stack,
       url: req.originalUrl,
       method: req.method,
       statusCode,
-    });
+    }, { level: 'error' });
   }
 
   // Check if error is critical and send notification (only for 500+ errors)
   if (isCritical && isCriticalError(err)) {
-    logger.warn('⚠️ Sending critical error notification to developer...');
+    logger.system('ERROR_NOTIFICATION_TRIGGERED', 'Sending critical error notification to developer', {}, { level: 'warn', severity: 'high' });
 
     // Send notification asynchronously (don't block response)
     notifyCriticalError(err, {
@@ -47,7 +48,7 @@ const errorHandler = (err, req, res, next) => {
       user: req.user || null,
       statusCode,
     }).catch((notificationError) => {
-      logger.error('Failed to send error notification:', notificationError.message);
+      logger.system('ERROR_NOTIFICATION_FAILED', 'Failed to send error notification', { errorMessage: notificationError?.message || String(notificationError) }, { level: 'error', severity: 'high' });
     });
   }
 
@@ -70,18 +71,18 @@ const errorHandler = (err, req, res, next) => {
  * Handle uncaught exceptions globally
  */
 process.on('uncaughtException', (error) => {
-  logger.error('💥 UNCAUGHT EXCEPTION - Application must restart', {
+  logger.system('UNCAUGHT_EXCEPTION', 'Uncaught exception, application must restart', {
     message: error.message,
     name: error.name,
     stack: error.stack,
-  });
+  }, { level: 'error', severity: 'critical' });
 
   // Notify developer
   notifyCriticalError(error, {
     type: 'uncaughtException',
     message: 'Application crashed due to uncaught exception',
   }).finally(() => {
-    logger.error('Exiting process in 5 seconds...');
+    logger.system('PROCESS_EXIT_SCHEDULED', 'Exiting process in 5 seconds due to uncaught exception');
     setTimeout(() => process.exit(1), 5000);
   });
 });
@@ -90,11 +91,11 @@ process.on('uncaughtException', (error) => {
  * Handle unhandled promise rejections
  */
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('💥 UNHANDLED PROMISE REJECTION - Application must restart', {
+  logger.system('UNHANDLED_PROMISE_REJECTION', 'Unhandled promise rejection, application must restart', {
     message: reason instanceof Error ? reason.message : String(reason),
     name: reason instanceof Error ? reason.name : 'Unknown',
     stack: reason instanceof Error ? reason.stack : 'N/A',
-  });
+  }, { level: 'error', severity: 'critical' });
 
   const error = reason instanceof Error ? reason : new Error(String(reason));
 
@@ -103,7 +104,7 @@ process.on('unhandledRejection', (reason, promise) => {
     type: 'unhandledRejection',
     message: 'Application encountered unhandled promise rejection',
   }).finally(() => {
-    logger.error('Exiting process in 5 seconds...');
+    logger.system('PROCESS_EXIT_SCHEDULED', 'Exiting process in 5 seconds due to unhandled rejection');
     setTimeout(() => process.exit(1), 5000);
   });
 });

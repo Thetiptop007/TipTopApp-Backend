@@ -9,7 +9,10 @@ const logDevTiming = (label, payload) => {
     return;
   }
 
-  logger.info(`[DASHBOARD_DEBUG] ${label} ${JSON.stringify(payload)}`);
+  logger.business('DASHBOARD_BUNDLE_BUILT', 'Dashboard timing sample', {
+    label,
+    ...payload,
+  }, { level: 'debug' });
 };
 
 const timedQuery = async (label, fn, payload = {}) => {
@@ -377,6 +380,10 @@ const buildDashboardBundle = async () => {
   const startedAt = Date.now();
   const boundaries = getDateBoundaries();
 
+  if (isDev) {
+    logger.business('DASHBOARD_BUNDLE_BUILD_STARTED', 'Dashboard bundle build started', {}, { level: 'debug' });
+  }
+
   const [stats, insights] = await Promise.all([
     buildDashboardStats(boundaries),
     buildBusinessInsights(boundaries),
@@ -392,6 +399,14 @@ const buildDashboardBundle = async () => {
     statsOrders: stats.totalOrders,
     insightsTodayOrders: insights.summary.todayOrders,
   });
+
+  if (isDev) {
+    logger.business('DASHBOARD_BUNDLE_BUILT', 'Dashboard bundle built', {
+      durationMs: Date.now() - startedAt,
+      statsOrders: stats.totalOrders,
+      insightsTodayOrders: insights.summary.todayOrders,
+    }, { level: 'debug' });
+  }
 
   return result;
 };

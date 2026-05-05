@@ -20,6 +20,8 @@ const { bulkUpdateOrderStatus: bulkUpdateOrderStatusService } = require('../serv
 const {
   updateOrderStatus: applyOrderStatusUpdate,
 } = require('../services/order.service');
+const { BUSINESS_EVENTS, logBusinessEvent } = require('../services/logging/businessEvent.logger');
+const { PAYMENT_EVENTS, logPaymentEvent, logRazorpayPlaceholderEvent } = require('../services/logging/paymentEvent.logger');
 const { emitOrderUpdate, emitUserNotification, emitNewOrder } = require('../utils/socket');
 
 const getCustomerSourceType = (order) => {
@@ -200,6 +202,21 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
   const taxAmount = Math.round((itemsTotal + deliveryFee) * (taxRate / 100));
   const finalAmount = itemsTotal + deliveryFee + taxAmount;
 
+  if (paymentMethod === 'ONLINE') {
+    logPaymentEvent(PAYMENT_EVENTS.PAYMENT_INITIATED, {
+      source: 'admin_create_order',
+      customerPhone,
+      amount: finalAmount,
+      method: paymentMethod,
+      route: req.originalUrl,
+    });
+    logRazorpayPlaceholderEvent(PAYMENT_EVENTS.PAYMENT_ORDER_CREATED, {
+      source: 'admin_create_order',
+      amount: finalAmount,
+      note: 'Razorpay integration pending',
+    });
+  }
+
   // Create order
   const order = await Order.create({
     customer: {
@@ -233,6 +250,26 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
     estimatedPrepTime: 20, // 20 minutes default
     specialInstructions,
   });
+
+  logBusinessEvent(BUSINESS_EVENTS.ORDER_CREATED, {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    placedBy: 'ADMIN',
+    paymentMethod: order.paymentMethod,
+    paymentStatus: order.paymentStatus,
+    amount: order.pricing?.finalAmount,
+    adminId: req.user?._id?.toString() || null,
+  });
+
+  if (order.paymentMethod === 'ONLINE') {
+    logPaymentEvent(PAYMENT_EVENTS.PAYMENT_CAPTURED, {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      amount: order.pricing?.finalAmount,
+      source: 'admin_create_order',
+      status: order.paymentStatus,
+    }, order.paymentStatus === 'PAID' ? 'success' : 'pending');
+  }
 
   logger.info(`Admin ${req.user.email.address} created ${orderType} order ${order.orderNumber} for ${customerName}`);
 
@@ -313,16 +350,10 @@ exports.completeTakeawayOrder = catchAsync(async (req, res, next) => {
 });
 
 exports.acceptOrder = catchAsync(async (req, res, next) => {
-  logger.info('\n===== ACCEPT ORDER REQUEST =====');
-  logger.info(`📦 Order ID: ${req.params.id}`);
-  logger.info(`👤 Admin: ${req.user.email}`);
-
-  // Start a session for transaction
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  logger.business('ORDER_ACCEPTED', 'Accepting order', { orderId: req.params.id, adminId: req.user._id }, { level: 'info' });
 
   try {
-    // Use findOneAndUpdate with atomic operation to prevent race conditions
+    // Use a single atomic conditional update to avoid transaction requirements on standalone MongoDB
     const order = await Order.findOneAndUpdate(
       {
         _id: req.params.id,
@@ -340,33 +371,32 @@ exports.acceptOrder = catchAsync(async (req, res, next) => {
         },
       },
       {
-        new: true, // Return updated document
+        returnDocument: 'after', // Return updated document
         runValidators: true,
-        session, // Use transaction session
       }
     );
 
     if (!order) {
-      await session.abortTransaction();
-      session.endSession();
-      
       // Check if order exists
       const existingOrder = await Order.findById(req.params.id);
       if (!existingOrder) {
-        logger.error(`❌ Order not found: ${req.params.id}`);
+        logger.business('ORDER_NOT_FOUND', 'Order not found for acceptance', { orderId: req.params.id }, { level: 'error', severity: 'high' });
         return next(new AppError('Order not found', 404));
       }
       
       // Order exists but status is not PENDING
-      logger.warn(`⚠️ Cannot accept - Order ${existingOrder.orderNumber} status is ${existingOrder.status}, expected PENDING`);
+      logger.business('ORDER_INVALID_STATUS_FOR_ACCEPT', 'Cannot accept order with invalid status', { orderId: req.params.id, currentStatus: existingOrder.status, expectedStatus: 'PENDING' }, { severity: 'medium' });
       return next(new AppError(`Order is already ${existingOrder.status.toLowerCase()}. Only pending orders can be accepted.`, 400));
     }
 
-    // Commit transaction
-    await session.commitTransaction();
-    session.endSession();
-
-    logger.info(`✅ Order ${order.orderNumber} status changed: PENDING → ACCEPTED`);
+    logger.business('ORDER_STATUS_CHANGED', 'Order status changed to ACCEPTED', { orderId: order._id, orderNumber: order.orderNumber, previousStatus: 'PENDING', newStatus: 'ACCEPTED' });
+    logBusinessEvent(BUSINESS_EVENTS.ORDER_ACCEPTED, {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      acceptedBy: req.user?._id?.toString() || null,
+      previousStatus: 'PENDING',
+      status: order.status,
+    });
 
     // Emit socket event to customer (only if customer.id exists)
     // Do this after transaction to avoid rollback issues
@@ -386,37 +416,30 @@ exports.acceptOrder = catchAsync(async (req, res, next) => {
       logger.error('Failed to send notification (non-critical):', notifError);
     }
 
-    logger.info('================================\n');
-
     res.status(200).json({
       status: 'success',
       message: 'Order accepted successfully',
       data: { order },
     });
   } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
     throw error;
   }
 });
 
 exports.markOrderPreparing = catchAsync(async (req, res, next) => {
-  logger.info('\n===== MARK PREPARING REQUEST =====');
-  logger.info(`📦 Order ID: ${req.params.id}`);
-  logger.info(`👤 Admin: ${req.user.email}`);
+  logger.business('ORDER_MARK_PREPARING_ATTEMPT', 'Attempting to mark order as preparing', { orderId: req.params.id, adminId: req.user._id }, { level: 'debug' });
 
   const order = await Order.findById(req.params.id);
 
   if (!order) {
-    logger.error(`❌ Order not found: ${req.params.id}`);
+    logger.business('ORDER_NOT_FOUND', 'Order not found for mark preparing', { orderId: req.params.id }, { level: 'error', severity: 'high' });
     return next(new AppError('Order not found', 404));
   }
 
-  logger.info(`📋 Order Number: ${order.orderNumber}`);
-  logger.info(`📊 Current Status: ${order.status}`);
+  logger.business('ORDER_PREPARING_DETAILS', 'Order preparing', { orderNumber: order.orderNumber, currentStatus: order.status }, { level: 'debug' });
 
   if (order.status !== 'ACCEPTED') {
-    logger.warn(`⚠️  Cannot mark preparing - Order status is ${order.status}, expected ACCEPTED`);
+    logger.business('ORDER_INVALID_STATUS_FOR_PREPARING', 'Cannot mark preparing with invalid status', { orderId: req.params.id, currentStatus: order.status, expectedStatus: 'ACCEPTED' }, { severity: 'medium' });
     return next(new AppError('Only accepted orders can be marked as preparing', 400));
   }
 
@@ -430,7 +453,7 @@ exports.markOrderPreparing = catchAsync(async (req, res, next) => {
 
   await order.save();
 
-  logger.info(`✅ Order ${order.orderNumber} status changed: ACCEPTED → PREPARING`);
+  logger.business('ORDER_STATUS_CHANGED', 'Order status changed to PREPARING', { orderId: order._id, orderNumber: order.orderNumber, previousStatus: 'ACCEPTED', newStatus: 'PREPARING' });
 
   // Emit socket event to customer (only if customer.id exists)
   if (order.customer && order.customer.id) {
@@ -445,8 +468,6 @@ exports.markOrderPreparing = catchAsync(async (req, res, next) => {
     logger.info(`📤 No customer ID - skipping socket notification`);
   }
 
-  logger.info('================================\n');
-
   res.status(200).json({
     status: 'success',
     message: 'Order marked as preparing',
@@ -455,23 +476,19 @@ exports.markOrderPreparing = catchAsync(async (req, res, next) => {
 });
 
 exports.markOrderReady = catchAsync(async (req, res, next) => {
-  logger.info('\n===== MARK READY REQUEST =====');
-  logger.info(`📦 Order ID: ${req.params.id}`);
-  logger.info(`👤 Admin: ${req.user.email}`);
+  logger.business('ORDER_MARK_READY_ATTEMPT', 'Attempting to mark order as ready', { orderId: req.params.id, adminId: req.user._id }, { level: 'debug' });
 
   const order = await Order.findById(req.params.id);
 
   if (!order) {
-    logger.error(`❌ Order not found: ${req.params.id}`);
+    logger.business('ORDER_NOT_FOUND', 'Order not found for mark ready', { orderId: req.params.id }, { level: 'error', severity: 'high' });
     return next(new AppError('Order not found', 404));
   }
 
-  logger.info(`📋 Order Number: ${order.orderNumber}`);
-  logger.info(`📊 Current Status: ${order.status}`);
-  logger.info(`📦 Order Type: ${order.orderType}`);
+  logger.business('ORDER_READY_DETAILS', 'Order ready check', { orderNumber: order.orderNumber, currentStatus: order.status, orderType: order.orderType }, { level: 'debug' });
 
   if (order.status !== 'ACCEPTED') {
-    logger.warn(`⚠️  Cannot mark ready - Order status is ${order.status}, expected ACCEPTED`);
+    logger.business('ORDER_INVALID_STATUS_FOR_READY', 'Cannot mark ready with invalid status', { orderId: req.params.id, currentStatus: order.status, expectedStatus: 'ACCEPTED' }, { severity: 'medium' });
     return next(new AppError('Only accepted orders can be marked as ready', 400));
   }
 
@@ -487,7 +504,7 @@ exports.markOrderReady = catchAsync(async (req, res, next) => {
 
     await order.save();
 
-    logger.info(`✅ Takeaway order ${order.orderNumber} status changed: ACCEPTED → READY_FOR_PICKUP`);
+    logger.business('ORDER_STATUS_CHANGED', 'Takeaway order status changed to READY_FOR_PICKUP', { orderId: order._id, orderNumber: order.orderNumber, previousStatus: 'ACCEPTED', newStatus: 'READY_FOR_PICKUP', orderType: 'TAKEAWAY' });
 
     // Emit socket event to customer (only if customer.id exists)
     if (order.customer && order.customer.id) {
@@ -501,8 +518,6 @@ exports.markOrderReady = catchAsync(async (req, res, next) => {
     } else {
       logger.info(`📤 No customer ID - skipping socket notification`);
     }
-
-    logger.info('================================\n');
 
     return res.status(200).json({
       status: 'success',
@@ -521,7 +536,7 @@ exports.markOrderReady = catchAsync(async (req, res, next) => {
 
   await order.save();
 
-  logger.info(`✅ Order ${order.orderNumber} status changed: ACCEPTED → READY`);
+  logger.business('ORDER_STATUS_CHANGED', 'Order status changed to READY', { orderId: order._id, orderNumber: order.orderNumber, previousStatus: 'ACCEPTED', newStatus: 'READY' });
 
   // Emit socket event to customer (only if customer.id exists)
   if (order.customer && order.customer.id) {
@@ -541,9 +556,7 @@ exports.markOrderReady = catchAsync(async (req, res, next) => {
     message: 'New order available for pickup',
   });
 
-  logger.info(`📤 Socket notifications sent to customer and delivery agents`);
-  logger.info(`🚚 Order now available for delivery agents to claim`);
-  logger.info('================================\n');
+  logger.business('ORDER_READY_FOR_DELIVERY', 'Order now available for delivery agents to claim', { orderId: order._id, orderNumber: order.orderNumber });
 
   res.status(200).json({
     status: 'success',
@@ -565,9 +578,15 @@ exports.bulkUpdateOrderStatus = catchAsync(async (req, res, next) => {
     adminUserId: req.user._id,
   });
 
-  logger.info(
-    `Bulk order status update by admin ${req.user._id}: requested=${result.totalRequested}, matched=${result.matched}, modified=${result.modified}, skipped=${result.skipped}, failed=${result.failed}, target=${status}`
-  );
+  logger.business('ORDER_BULK_STATUS_UPDATE_COMPLETED', 'Bulk order status update processed', {
+    adminUserId: req.user._id.toString(),
+    requested: result.totalRequested,
+    matched: result.matched,
+    modified: result.modified,
+    skipped: result.skipped,
+    failed: result.failed,
+    targetStatus: status,
+  });
 
   res.status(200).json({
     status: 'success',
@@ -578,28 +597,24 @@ exports.bulkUpdateOrderStatus = catchAsync(async (req, res, next) => {
 
 exports.cancelOrder = catchAsync(async (req, res, next) => {
   const { reason } = req.body;
-  
-  logger.info(`
-================================
-===== CANCEL ORDER REQUEST =====
-================================
-📦 Order ID: ${req.params.id}
-👤 Admin: ${req.user.email}
-📝 Reason: ${reason || 'Not provided'}
-================================`);
+
+  logger.business('ORDER_CANCEL_ATTEMPT', 'Order cancellation requested', {
+    orderId: req.params.id,
+    adminId: req.user._id.toString(),
+    reason: reason || null,
+  }, { level: 'debug' });
   
   const order = await Order.findById(req.params.id);
 
   if (!order) {
-    logger.error(`❌ Order not found: ${req.params.id}`);
+    logger.business('ORDER_NOT_FOUND', 'Order not found for cancellation', { orderId: req.params.id }, { level: 'error', severity: 'high' });
     return next(new AppError('Order not found', 404));
   }
 
-  logger.info(`📋 Current Status: ${order.status}`);
-  logger.info(`📋 Order Number: ${order.orderNumber}`);
+  logger.business('ORDER_CANCEL_DETAILS', 'Order cancel details', { currentStatus: order.status, orderNumber: order.orderNumber }, { level: 'debug' });
 
   if (['DELIVERED', 'COMPLETED', 'CANCELLED'].includes(order.status)) {
-    logger.warn(`⚠️  Cannot cancel order - already ${order.status}`);
+    logger.business('ORDER_CANNOT_CANCEL', 'Cannot cancel order - invalid status', { orderId: req.params.id, currentStatus: order.status }, { severity: 'medium' });
     return next(new AppError('Cannot cancel this order', 400));
   }
 
@@ -613,7 +628,19 @@ exports.cancelOrder = catchAsync(async (req, res, next) => {
 
   await order.save();
 
-  logger.info(`✅ Order ${order.orderNumber} status changed: ${order.statusHistory[order.statusHistory.length - 2]?.status || 'UNKNOWN'} → CANCELLED`);
+  logger.business('ORDER_CANCELLED', 'Order cancelled', { orderId: order._id, orderNumber: order.orderNumber, previousStatus: order.statusHistory[order.statusHistory.length - 2]?.status || 'UNKNOWN' });
+  logBusinessEvent(BUSINESS_EVENTS.ORDER_CANCELLED, {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'admin',
+    entityId: order._id.toString(),
+    entityType: 'order',
+    metadata: {
+      reason: reason || null,
+      source: 'admin',
+    },
+  }, 'info', 'medium');
 
   // Emit socket event to customer (only if customer.id exists)
   if (order.customer && order.customer.id) {
@@ -638,8 +665,6 @@ exports.cancelOrder = catchAsync(async (req, res, next) => {
       message: 'Order has been cancelled',
     });
   }
-
-  logger.info('================================\n');
 
   res.status(200).json({
     status: 'success',
@@ -711,7 +736,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     
     if (customerUser) {
       customerId = customerUser._id;
-      logger.info(`✅ Found existing customer: ${customer.name} (${customer.phone})`);
+      logger.business('CUSTOMER_FOUND', 'Found existing customer', { customerName: customer.name, customerPhone: customer.phone }, { level: 'debug' });
     }
   }
 
@@ -761,6 +786,22 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   const packagingFee = settings.packagingFee || 0;
   
   const finalAmount = itemsTotal + gst + deliveryFee + platformFee + packagingFee;
+
+  if (paymentMethod !== 'COD') {
+    logPaymentEvent(PAYMENT_EVENTS.PAYMENT_INITIATED, {
+      source: 'guest_checkout',
+      amount: finalAmount,
+      method: paymentMethod,
+      customerPhone: customer.phone,
+      route: req.originalUrl,
+    });
+    logRazorpayPlaceholderEvent(PAYMENT_EVENTS.PAYMENT_ORDER_CREATED, {
+      source: 'guest_checkout',
+      amount: finalAmount,
+      customerPhone: customer.phone,
+      note: 'Razorpay integration pending',
+    });
+  }
 
   // Prepare delivery address with coordinates
   let formattedDeliveryAddress = undefined;
@@ -825,25 +866,60 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     },
   });
 
+  logBusinessEvent(BUSINESS_EVENTS.ORDER_CREATED, {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    placedBy: customerId ? 'CUSTOMER' : 'GUEST',
+    paymentMethod: order.paymentMethod,
+    paymentStatus: order.paymentStatus,
+    amount: order.pricing?.finalAmount,
+    userId: customerId ? customerId.toString() : null,
+  });
+
+  if (order.paymentMethod !== 'COD') {
+    logPaymentEvent(PAYMENT_EVENTS.PAYMENT_ORDER_CREATED, {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      amount: order.pricing?.finalAmount,
+      gateway: order.paymentDetails?.gateway || 'razorpay_pending',
+    }, 'pending');
+  }
+
+  if (!customerId) {
+    logBusinessEvent(BUSINESS_EVENTS.GUEST_ORDER_CREATED, {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      actorId: null,
+      actorRole: 'guest',
+      entityId: order._id.toString(),
+      entityType: 'order',
+      metadata: {
+        paymentMethod: order.paymentMethod,
+        amount: order.pricing?.finalAmount,
+      },
+      source: 'guest',
+    }, 'info', 'medium');
+  }
+
   // Verify order was saved with a valid order number
   logger.info(`📝 Order created with ID: ${order._id}, OrderNumber: ${order.orderNumber}`);
   
   if (!order._id || !order.orderNumber) {
-    logger.error('❌ Order creation failed - missing _id or orderNumber');
+    logger.business('ORDER_CREATION_FAILED', 'Order creation failed - missing _id or orderNumber', { reason: 'validation error' }, { level: 'error', severity: 'high' });
     return next(new AppError('Failed to create order - please try again', 500));
   }
 
   // Validate order number format
   const orderNumberPattern = /^ORD-\d{6,}$/;
   const isValidFormat = orderNumberPattern.test(order.orderNumber);
-  logger.info(`🔍 Validating order number: ${order.orderNumber}, Pattern match: ${isValidFormat}`);
+  logger.business('ORDER_NUMBER_VALIDATION', 'Validating order number', { orderNumber: order.orderNumber, isValidFormat }, { level: 'debug' });
   
   if (!isValidFormat) {
-    logger.error(`❌ Invalid order number format: ${order.orderNumber}`);
+    logger.business('INVALID_ORDER_NUMBER', 'Invalid order number format', { orderNumber: order.orderNumber }, { severity: 'medium' });
     return next(new AppError('Order created but validation failed - please contact support', 500));
   }
 
-  logger.info(`✅ ${customerId ? 'Customer' : 'Guest'} order created successfully: ${order.orderNumber} for ${customer.name} (${customer.phone})`);
+  logger.business('ORDER_CREATED', 'Order created successfully', { orderNumber: order.orderNumber, customerName: customer.name, customerId, orderType: customerId ? 'CUSTOMER_ORDER' : 'GUEST_ORDER' });
 
   // Update customer stats if this is a registered customer
   if (customerUser) {
@@ -851,7 +927,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
       customerUser.customerData.totalOrders += 1;
       customerUser.customerData.totalSpent += finalAmount;
       await customerUser.save({ validateBeforeSave: false });
-      logger.info(`📊 Updated customer stats: ${customerUser.email.address} - Total Orders: ${customerUser.customerData.totalOrders}, Total Spent: ₹${customerUser.customerData.totalSpent}`);
+      logger.business('CUSTOMER_STATS_UPDATED', 'Updated customer stats', { customerEmail: customerUser.email.address, totalOrders: customerUser.customerData.totalOrders, totalSpent: customerUser.customerData.totalSpent }, { level: 'debug' });
     } catch (err) {
       logger.error('Failed to update customer stats:', err.message);
       // Don't fail the order if stats update fails
@@ -862,7 +938,7 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   try {
     emitNewOrder(order);
   } catch (err) {
-    logger.error('⚠️ Failed to emit socket event:', err.message);
+    logger.system('SOCKET_EVENT_ERROR', 'Failed to emit socket event', { errorMessage: err.message }, { level: 'error', severity: 'medium' });
     // Don't fail the request if socket emit fails
   }
 
@@ -1063,10 +1139,17 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
     return orderDate < startOfDay;
   }).length;
   
-  logger.info(`📊 Today's Orders Summary: Pending=${groupedOrders.pending.length}, Accepted=${groupedOrders.accepted.length}, Ready=${groupedOrders.ready.length}, ReadyForPickup=${groupedOrders.ready_for_pickup.length}, OutForDelivery=${groupedOrders.out_for_delivery.length}, Delivered=${groupedOrders.delivered.length}`);
+  logger.business('ORDERS_TODAY_SUMMARY', 'Today orders summary generated', {
+    pending: groupedOrders.pending.length,
+    accepted: groupedOrders.accepted.length,
+    ready: groupedOrders.ready.length,
+    readyForPickup: groupedOrders.ready_for_pickup.length,
+    outForDelivery: groupedOrders.out_for_delivery.length,
+    delivered: groupedOrders.delivered.length,
+  }, { level: 'info', severity: 'low' });
   
   if (ordersFromPreviousDays > 0) {
-    logger.info(`⚠️  Including ${ordersFromPreviousDays} in-progress order(s) from previous day(s) to prevent midnight loss`);
+    logger.business('ORDER_CARRYFORWARD', 'Including in-progress orders from previous days to prevent midnight loss', { carryforwardCount: ordersFromPreviousDays }, { level: 'info' });
   }
 
   res.status(200).json({
@@ -1421,7 +1504,7 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
     logger.error('Socket emit error:', error);
   }
 
-  logger.info(`✅ Admin order created: ${order.orderNumber}`);
+  logger.business('ORDER_CREATED', 'Admin order created', { orderNumber: order.orderNumber }, { level: 'info' });
 
   res.status(201).json({
     status: 'success',
@@ -1463,6 +1546,18 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   const appliedStatus = await applyOrderStatusUpdate(order, status, req.user._id, note || notes);
 
   logger.info(`Order ${order.orderNumber} status updated to ${appliedStatus} by ${req.user.email.address}`);
+  logBusinessEvent(BUSINESS_EVENTS.ORDER_UPDATED, {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || null,
+    entityId: order._id.toString(),
+    entityType: 'order',
+    metadata: {
+      status: appliedStatus,
+      note: note || notes || null,
+    },
+  }, 'info', 'medium');
 
   try {
     emitOrderUpdate(order._id.toString(), {
@@ -1526,15 +1621,10 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   logger.info(`Found ${allItems.length} items in database (regardless of availability)`);
   if (allItems.length > 0) {
     allItems.forEach(item => {
-      logger.info(`  ✓ Item ${item._id}: "${item.name}", isAvailable=${item.isAvailable}, isActive=${item.isActive}`);
+      logger.business('MENU_ITEM_CHECKED', 'Item availability verified', { itemId: item._id, itemName: item.name, isAvailable: item.isAvailable, isActive: item.isActive }, { level: 'debug' });
     });
   } else {
-    logger.error('❌ No items found in database!');
-    logger.info('Checking if IDs are valid ObjectIds...');
-    uniqueIds.forEach(id => {
-      const isValid = mongoose.Types.ObjectId.isValid(id);
-      logger.info(`  ID ${id}: ${isValid ? 'Valid' : 'INVALID'}`);
-    });
+    logger.business('NO_ITEMS_IN_DATABASE', 'No items found in database', {}, { level: 'error', severity: 'high' });
   }
   
   const menuItems = await MenuItem.find({
@@ -1543,13 +1633,11 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     isActive: true,
   });
   
-  logger.info(`Found ${menuItems.length} available items out of ${uniqueIds.length} unique requested`);
-  
   if (menuItems.length !== uniqueIds.length) {
     // Find which items are missing
     const foundIds = menuItems.map(item => item._id.toString());
     const missingIds = uniqueIds.filter(id => !foundIds.includes(id.toString()));
-    logger.error(`❌ Missing or unavailable menu items: ${missingIds.join(', ')}`);
+    logger.business('MISSING_MENU_ITEMS', 'Missing or unavailable menu items', { missingIds }, { level: 'error', severity: 'high' });
     
     return next(
       new AppError('Some menu items are not available or do not exist', 400)
@@ -1619,6 +1707,22 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   // Calculate final amount
   const finalAmount = subtotal + deliveryCharges + taxAmount - discountAmount;
 
+  if (paymentMethod !== 'COD') {
+    logPaymentEvent(PAYMENT_EVENTS.PAYMENT_INITIATED, {
+      source: 'customer_checkout',
+      amount: finalAmount,
+      method: paymentMethod,
+      userId: req.user?._id?.toString() || null,
+      route: req.originalUrl,
+    });
+    logRazorpayPlaceholderEvent(PAYMENT_EVENTS.PAYMENT_ORDER_CREATED, {
+      source: 'customer_checkout',
+      amount: finalAmount,
+      userId: req.user?._id?.toString() || null,
+      note: 'Razorpay integration pending',
+    });
+  }
+
   // Determine payment status based on method
   const paymentStatus = paymentMethod === 'COD' ? 'PENDING' : 
                        paymentDetails?.transactionId ? 'PAID' : 'PENDING';
@@ -1658,6 +1762,26 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     },
   });
 
+  logBusinessEvent(BUSINESS_EVENTS.ORDER_CREATED, {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    placedBy: 'CUSTOMER',
+    paymentMethod: order.paymentMethod,
+    paymentStatus: order.paymentStatus,
+    amount: order.pricing?.finalAmount,
+    userId: req.user?._id?.toString() || null,
+  });
+
+  if (order.paymentMethod !== 'COD') {
+    logPaymentEvent(PAYMENT_EVENTS.PAYMENT_ORDER_CREATED, {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      amount: order.pricing?.finalAmount,
+      gateway: order.paymentDetails?.gateway || 'razorpay_pending',
+      transactionId: order.paymentDetails?.transactionId || null,
+    }, order.paymentDetails?.transactionId ? 'success' : 'pending');
+  }
+
   // Update menu item stats
   for (const item of orderItems) {
     await MenuItem.findByIdAndUpdate(
@@ -1677,7 +1801,7 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   req.user.customerData.totalSpent += finalAmount;
   await req.user.save({ validateBeforeSave: false });
 
-  logger.info(`✅ Order created: ${order.orderNumber} by ${req.user.email.address} - Amount: ₹${finalAmount}`);
+  logger.business('ORDER_CREATED', 'Order created by admin', { orderNumber: order.orderNumber, createdBy: req.user.email.address, totalAmount: finalAmount }, { level: 'info' });
 
   // Send notifications
   try {
@@ -1856,6 +1980,12 @@ exports.assignDeliveryPartner = catchAsync(async (req, res, next) => {
   logger.info(
     `Order ${order.orderNumber} assigned to ${deliveryPartner.name.first} ${deliveryPartner.name.last} by ${req.user.email.address}`
   );
+  logBusinessEvent(BUSINESS_EVENTS.DELIVERY_ASSIGNED, {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    deliveryPartnerId: deliveryPartner._id.toString(),
+    assignedBy: req.user?._id?.toString() || null,
+  });
 
   // Send push notification to delivery partner
   try {
@@ -2024,6 +2154,18 @@ exports.customerCancelOrder = catchAsync(async (req, res, next) => {
   await order.save();
 
   logger.info(`Order ${order.orderNumber} cancelled by customer ${req.user.email.address}`);
+  logBusinessEvent(BUSINESS_EVENTS.ORDER_CANCELLED, {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || 'customer',
+    entityId: order._id.toString(),
+    entityType: 'order',
+    metadata: {
+      reason: 'Cancelled by customer',
+      source: 'customer',
+    },
+  }, 'info', 'medium');
 
   // Notify admin
   emitOrderUpdate({
@@ -2167,6 +2309,13 @@ exports.markOrderDelivered = catchAsync(async (req, res, next) => {
   
   // Handle COD payment
   if (order.paymentMethod === 'COD') {
+    logPaymentEvent(PAYMENT_EVENTS.PAYMENT_CAPTURE_REQUESTED, {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      amount: order.pricing?.finalAmount,
+      method: 'COD',
+    }, 'pending');
+
     order.cashCollection = {
       expectedAmount: order.pricing.finalAmount,
       collectedAmount: collectedAmount || order.pricing.finalAmount,
@@ -2175,6 +2324,20 @@ exports.markOrderDelivered = catchAsync(async (req, res, next) => {
       isSettled: false,
     };
     order.paymentStatus = 'PAID';
+
+    logPaymentEvent(PAYMENT_EVENTS.PAYMENT_CAPTURED, {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      amount: order.pricing?.finalAmount,
+      method: 'COD',
+      deliveryPartnerId: req.user?._id?.toString() || null,
+    }, 'success');
+    logBusinessEvent(BUSINESS_EVENTS.PAYMENT_SUCCESS, {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      amount: order.pricing?.finalAmount,
+      method: 'COD',
+    });
   }
 
   order.statusHistory.push({
@@ -2188,6 +2351,18 @@ exports.markOrderDelivered = catchAsync(async (req, res, next) => {
 
   const userEmail = typeof req.user.email === 'string' ? req.user.email : req.user.email?.address || 'Unknown';
   logger.info(`Order ${order.orderNumber} delivered by partner ${userEmail}`);
+  logBusinessEvent(BUSINESS_EVENTS.ORDER_DELIVERED, {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    actorId: req.user?._id?.toString() || null,
+    actorRole: req.user?.role || null,
+    entityId: order._id.toString(),
+    entityType: 'order',
+    metadata: {
+      paymentStatus: order.paymentStatus,
+      paymentMethod: order.paymentMethod,
+    },
+  }, 'info', 'medium');
 
   // Notify customer
   const customerId = order.customer?.id || order.customer?._id || order.customer;
@@ -2253,8 +2428,6 @@ exports.getAssignedOrders = catchAsync(async (req, res, next) => {
  * Used by the thermal printer desktop application
  */
 exports.getPendingPrintOrders = catchAsync(async (req, res, next) => {
-  logger.info('🖨️  Thermal printer service requesting pending orders');
-  
   // Find accepted orders that haven't been printed yet
   const orders = await Order.find({
     status: 'ACCEPTED',
@@ -2266,12 +2439,6 @@ exports.getPendingPrintOrders = catchAsync(async (req, res, next) => {
     .populate('items.menuItemId', 'name')
     .select('-__v')
     .lean();
-
-  logger.info(`📥 Found ${orders.length} order(s) pending print`);
-  
-  if (orders.length > 0) {
-    logger.info(`📋 Order numbers: ${orders.map(o => o.orderNumber).join(', ')}`);
-  }
 
   res.status(200).json({
     success: true,
@@ -2325,15 +2492,15 @@ exports.markOrderAsPrinted = catchAsync(async (req, res, next) => {
       isPrinted: true,
       printedAt: printedAt || new Date(),
     },
-    { new: true, runValidators: false }
+    { returnDocument: 'after', runValidators: false }
   );
 
   if (!order) {
-    logger.error(`❌ Order ${orderId} not found`);
+    logger.business('ORDER_NOT_FOUND', 'Order not found for print mark', { orderId }, { level: 'error', severity: 'high' });
     return next(new AppError('Order not found', 404));
   }
 
-  logger.info(`✅ Order ${order.orderNumber} marked as printed`);
+  logger.business('ORDER_MARKED_PRINTED', 'Order marked as printed', { orderNumber: order.orderNumber }, { level: 'info' });
 
   res.status(200).json({
     success: true,
@@ -2353,8 +2520,6 @@ exports.markOrderAsPrinted = catchAsync(async (req, res, next) => {
 exports.markOrderForPrint = catchAsync(async (req, res, next) => {
   const { orderId } = req.params;
 
-  logger.info(`📋 Admin marking order ${orderId} for thermal printing`);
-
   const order = await Order.findByIdAndUpdate(
     orderId,
     {
@@ -2362,15 +2527,15 @@ exports.markOrderForPrint = catchAsync(async (req, res, next) => {
       status: 'ACCEPTED', // Ensure status is ACCEPTED (uppercase to match query)
       updatedAt: new Date(),
     },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!order) {
-    logger.error(`❌ Order ${orderId} not found`);
+    logger.business('ORDER_NOT_FOUND', 'Order not found for thermal print', { orderId }, { level: 'error', severity: 'high' });
     return next(new AppError('Order not found', 404));
   }
 
-  logger.info(`✅ Order ${order.orderNumber} marked for thermal printing`);
+  logger.business('ORDER_MARKED_THERMAL_PRINT', 'Order marked for thermal printing', { orderNumber: order.orderNumber }, { level: 'info' });
 
   res.status(200).json({
     success: true,

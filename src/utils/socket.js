@@ -46,13 +46,13 @@ const initializeSocket = (server) => {
       socket.user = user;
       next();
     } catch (error) {
-      logger.error('Socket authentication error:', error);
+      logger.system('SOCKET_AUTH_ERROR', 'Socket authentication error', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       next(new Error('Authentication error: Invalid token'));
     }
   });
 
   io.on('connection', (socket) => {
-    logger.info(`Socket connected: ${socket.id} (User: ${socket.user.name})`);
+    logger.system('SOCKET_CONNECTED', 'Socket connected', { socketId: socket.id, userId: socket.user._id, userName: socket.user.name }, { level: 'debug' });
 
     // Join user-specific room
     socket.join(`user:${socket.user._id}`);
@@ -77,15 +77,15 @@ const initializeSocket = (server) => {
 
     // Common events
     socket.on('disconnect', () => {
-      logger.info(`Socket disconnected: ${socket.id} (User: ${socket.user.name})`);
+      logger.system('SOCKET_DISCONNECTED', 'Socket disconnected', { socketId: socket.id, userId: socket.user._id, userName: socket.user.name }, { level: 'debug' });
     });
 
     socket.on('error', (error) => {
-      logger.error(`Socket error for ${socket.id}:`, error);
+      logger.system('SOCKET_ERROR', 'Socket error occurred', { socketId: socket.id, errorMessage: error.message }, { level: 'error', severity: 'high' });
     });
   });
 
-  logger.info('Socket.IO initialized');
+  logger.system('SOCKET_IO_INITIALIZED', 'Socket.IO initialized');
   return io;
 };
 
@@ -96,13 +96,13 @@ const handleCustomerEvents = (socket) => {
   // Join order-specific room when tracking an order
   socket.on('track:order', (orderId) => {
     socket.join(`order:${orderId}`);
-    logger.info(`Customer ${socket.user._id} tracking order ${orderId}`);
+    logger.business('ORDER_TRACKING_STARTED', 'Customer tracking order', { customerId: socket.user._id, orderId }, { level: 'debug' });
   });
 
   // Stop tracking order
   socket.on('untrack:order', (orderId) => {
     socket.leave(`order:${orderId}`);
-    logger.info(`Customer ${socket.user._id} stopped tracking order ${orderId}`);
+    logger.business('ORDER_TRACKING_STOPPED', 'Customer stopped tracking order', { customerId: socket.user._id, orderId }, { level: 'debug' });
   });
 };
 
@@ -136,9 +136,9 @@ const handleDeliveryPartnerEvents = (socket) => {
         });
       }
 
-      logger.debug(`Delivery partner ${socket.user._id} location updated`);
+      logger.business('DELIVERY_LOCATION_UPDATED', 'Delivery partner location updated', { deliveryPartnerId: socket.user._id }, { level: 'debug' });
     } catch (error) {
-      logger.error('Error updating delivery location:', error);
+      logger.system('DELIVERY_LOCATION_UPDATE_ERROR', 'Error updating delivery location', { errorMessage: error.message }, { level: 'error', severity: 'high' });
       socket.emit('error', { message: 'Failed to update location' });
     }
   });
@@ -146,7 +146,7 @@ const handleDeliveryPartnerEvents = (socket) => {
   // Join order room when accepting delivery
   socket.on('delivery:accept', (orderId) => {
     socket.join(`order:${orderId}`);
-    logger.info(`Delivery partner ${socket.user._id} accepted order ${orderId}`);
+    logger.business('ORDER_ACCEPTED_BY_DELIVERY', 'Delivery partner accepted order', { deliveryPartnerId: socket.user._id, orderId });
   });
 
   // Update delivery status
@@ -172,7 +172,7 @@ const handleAdminEvents = (socket) => {
   // Request real-time statistics
   socket.on('admin:request-stats', () => {
     // Stats will be sent via emitAdminStats function
-    logger.info(`Admin ${socket.user._id} requested stats`);
+    logger.business('ADMIN_STATS_REQUESTED', 'Admin requested stats', { adminId: socket.user._id }, { level: 'debug' });
   });
 };
 
@@ -197,7 +197,7 @@ const emitOrderUpdate = (orderId, data) => {
     timestamp: new Date(),
   });
 
-  logger.info(`Order update emitted for order ${orderId}:`, data.status);
+  logger.business('ORDER_UPDATE_EMITTED', 'Order update emitted', { orderId, status: data.status });
 };
 
 /**
@@ -213,7 +213,7 @@ const emitUserNotification = (userId, notification) => {
     timestamp: new Date(),
   });
 
-  logger.info(`Notification sent to user ${userId}`);
+  logger.system('NOTIFICATION_SENT_USER', 'Notification sent to user', { userId }, { level: 'debug' });
 };
 
 /**
@@ -229,7 +229,7 @@ const emitRoleNotification = (role, notification) => {
     timestamp: new Date(),
   });
 
-  logger.info(`Notification sent to role ${role}`);
+  logger.system('NOTIFICATION_SENT_ROLE', 'Notification sent to role', { role }, { level: 'debug' });
 };
 
 /**
@@ -264,7 +264,7 @@ const emitNewOrder = (order) => {
     timestamp: new Date(),
   });
 
-  logger.info(`New order notification emitted for order ${order.orderNumber}`);
+  logger.business('ORDER_NOTIFICATION_EMITTED', 'New order notification emitted', { orderNumber: order.orderNumber }, { level: 'debug' });
 };
 
 /**

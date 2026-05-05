@@ -34,20 +34,18 @@ const bulkUpdateOrderStatus = async ({ orderIds, status, adminUserId }) => {
 
   const invalidIds = requestedIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   const failedIds = [...invalidIds];
   const skippedIds = [];
 
   try {
-    logger.info(
-      `[BULK STATUS] Request size=${requestedIds.length}, status=${String(status).toUpperCase()}, invalidIds=${invalidIds.length}`
-    );
+    logger.business('ORDER_BULK_STATUS_UPDATE_STARTED', 'Bulk order status update started', {
+      requestedCount: requestedIds.length,
+      status: String(status).toUpperCase(),
+      invalidCount: invalidIds.length,
+    }, { level: 'info' });
 
     const orders = await Order.find({ _id: { $in: objectIds } })
       .select('_id status orderType orderNumber')
-      .session(session)
       .lean();
 
     const ordersById = new Map(orders.map((order) => [order._id.toString(), order]));
@@ -68,9 +66,12 @@ const bulkUpdateOrderStatus = async ({ orderIds, status, adminUserId }) => {
         validateStatusTransition(order.status, targetStatus);
       } catch (error) {
         skippedIds.push(id);
-        logger.warn(
-          `[BULK STATUS] Skipped ${order.orderNumber || id}: ${order.status} → ${targetStatus} not allowed`
-        );
+        logger.business('ORDER_BULK_STATUS_UPDATE_SKIPPED', 'Bulk order status update skipped', {
+          orderId: order._id.toString(),
+          orderNumber: order.orderNumber || null,
+          currentStatus: order.status,
+          targetStatus,
+        }, { level: 'warn', severity: 'medium' });
         continue;
       }
 
@@ -96,7 +97,6 @@ const bulkUpdateOrderStatus = async ({ orderIds, status, adminUserId }) => {
     }
 
     if (bulkOps.length === 0) {
-      await session.abortTransaction();
       return {
         totalRequested: requestedIds.length,
         matched: 0,
@@ -108,29 +108,29 @@ const bulkUpdateOrderStatus = async ({ orderIds, status, adminUserId }) => {
     }
 
     const result = await Order.bulkWrite(bulkOps, {
-      session,
       ordered: false,
     });
-
-    await session.commitTransaction();
 
     const matched = result.matchedCount || 0;
     const modified = result.modifiedCount || 0;
     const writeMismatches = Math.max(0, bulkOps.length - matched);
     const failed = failedIds.length + writeMismatches;
 
-    logger.info(
-      `[BULK STATUS] Completed status=${String(status).toUpperCase()} total=${requestedIds.length} matched=${matched} modified=${modified} skipped=${skippedIds.length} failed=${failed}`
-    );
+    logger.business('ORDER_BULK_STATUS_UPDATE_COMPLETED', 'Bulk order status update completed', {
+      status: String(status).toUpperCase(),
+      totalRequested: requestedIds.length,
+      matched,
+      modified,
+      skipped: skippedIds.length,
+      failed,
+    }, { level: 'info' });
 
     if (failedIds.length > 0) {
-      logger.warn(`[BULK STATUS] Failed IDs: ${failedIds.join(', ')}`);
+      logger.business('ORDER_BULK_STATUS_UPDATE_FAILED', 'Bulk order status update had failed IDs', { failedIds, failedCount: failedIds.length }, { level: 'warn', severity: 'medium' });
     }
 
     if (writeMismatches > 0) {
-      logger.warn(
-        `[BULK STATUS] ${writeMismatches} order(s) did not match at write time due to concurrent status changes`
-      );
+      logger.business('ORDER_BULK_STATUS_UPDATE_FAILED', 'Bulk order status update write mismatches detected', { writeMismatches }, { level: 'warn', severity: 'medium' });
     }
 
     return {
@@ -142,11 +142,8 @@ const bulkUpdateOrderStatus = async ({ orderIds, status, adminUserId }) => {
       failedIds,
     };
   } catch (error) {
-    await session.abortTransaction();
-    logger.error('[BULK STATUS] Bulk update failed:', error);
+    logger.business('ORDER_BULK_STATUS_UPDATE_FAILED', 'Bulk order status update failed', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     throw error;
-  } finally {
-    session.endSession();
   }
 };
 

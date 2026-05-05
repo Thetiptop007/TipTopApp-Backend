@@ -48,7 +48,7 @@ class APIFeatures {
     if (this.queryString.search) {
       const searchTerm = this.queryString.search.trim().toLowerCase();
       
-      logger.debug('[Search] Search initiated with term:', searchTerm);
+      logger.business('MENU_SEARCH', 'Menu search initiated', { searchTerm }, { level: 'debug' });
       
       // Store search term for relevance sorting later
       this._searchTerm = searchTerm;
@@ -102,10 +102,10 @@ class APIFeatures {
       // Check for common typo corrections
       const correctedTerm = typoMappings[searchTerm];
       if (correctedTerm) {
-        logger.debug('[Search] Typo correction applied:', {
+        logger.business('MENU_SEARCH_CORRECTION_APPLIED', 'Menu search typo correction applied', {
           original: searchTerm,
           corrected: correctedTerm
-        });
+        }, { level: 'debug' });
         const correctedPattern = correctedTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         searchPatterns.push(
           // Exact and contains for corrected term
@@ -116,7 +116,7 @@ class APIFeatures {
           { description: { $regex: `\\b${correctedPattern}`, $options: 'i' } }
         );
       } else {
-        logger.debug('[Search] No typo correction needed for:', searchTerm);
+        logger.business('MENU_SEARCH', 'Menu search used without typo correction', { searchTerm }, { level: 'debug' });
       }
       
       // Flexible pattern for typo tolerance (allows 1-2 character differences)
@@ -164,13 +164,11 @@ class APIFeatures {
       // Build search filter using $or
       const searchFilter = { $or: searchPatterns };
       
-      logger.debug('[Search] Search patterns created:', {
-        patternCount: searchPatterns.length
-      });
+      logger.business('MENU_SEARCH_PATTERNS_BUILT', 'Menu search patterns built', { patternCount: searchPatterns.length }, { level: 'debug' });
       
       // Merge conditions with existing query
       if (Object.keys(currentConditions).length > 0) {
-        logger.debug('[Search] Merging with existing query conditions');
+        logger.business('MENU_SEARCH_FILTER_MERGED', 'Menu search merged with existing query conditions', { hasAndClause: !!currentConditions.$and }, { level: 'debug' });
         if (currentConditions.$and) {
           currentConditions.$and.push(searchFilter);
           this.query.setQuery(currentConditions);
@@ -181,7 +179,7 @@ class APIFeatures {
           this.query.setQuery(mergedConditions);
         }
       } else {
-        logger.debug('[Search] Using search filter as main query');
+        logger.business('MENU_SEARCH_FILTER_MERGED', 'Menu search used as main query', { hasExistingConditions: false }, { level: 'debug' });
         this.query.setQuery(searchFilter);
       }
     }
@@ -262,13 +260,13 @@ class APIFeatures {
     
     // For search relevance, we need to get ALL matching documents before pagination
     if (this._searchTerm) {
-      logger.debug('[Relevance Scoring] Starting relevance calculation for term:', this._searchTerm);
+      logger.business('MENU_RELEVANCE_BUILT', 'Relevance scoring started', { searchTerm: this._searchTerm }, { level: 'debug' });
       
       // Clone the query without skip/limit for relevance sorting
       const queryWithoutPagination = this.query.model.find(this.query.getQuery());
       let allDocs = await queryWithoutPagination.select('-__v').exec();
       
-      logger.debug('[Relevance Scoring] Found matching documents:', allDocs.length);
+      logger.business('MENU_RELEVANCE_BUILT', 'Relevance scoring matched documents', { matchCount: allDocs.length }, { level: 'debug' });
       
       if (allDocs.length > 0) {
         const searchTerm = this._searchTerm.toLowerCase();
@@ -297,10 +295,10 @@ class APIFeatures {
         const correctedSearchTerm = typoMappings[searchTerm] || searchTerm;
         
         if (correctedSearchTerm !== searchTerm) {
-          logger.debug('[Relevance Scoring] Using corrected term for scoring:', {
+          logger.business('MENU_RELEVANCE_BUILT', 'Relevance scoring used corrected term', {
             original: searchTerm,
             corrected: correctedSearchTerm
-          });
+          }, { level: 'debug' });
         }
         
         allDocs = allDocs.map(doc => {
@@ -434,7 +432,7 @@ class APIFeatures {
             name: name
           };
         });
-        logger.debug('[Relevance Scoring] Top results by relevance:', topResults);
+        logger.business('MENU_RELEVANCE_BUILT', 'Relevance scoring top results computed', { topResultCount: topResults.length }, { level: 'debug' });
         
         // Extract just the documents
         allDocs = allDocs.map(item => item.doc);
@@ -445,7 +443,7 @@ class APIFeatures {
         const total = allDocs.length;
         const totalPages = Math.ceil(total / limit);
         
-        logger.debug(`[Relevance Scoring] Returning page ${page}/${totalPages} with ${docs.length} items`);
+        logger.business('MENU_RELEVANCE_BUILT', 'Relevance scoring paginated results', { page, totalPages, resultCount: docs.length }, { level: 'debug' });
         
         return {
           data: docs,

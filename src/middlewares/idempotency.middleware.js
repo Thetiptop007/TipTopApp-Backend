@@ -29,8 +29,8 @@ const checkIdempotency = (ttl = 86400) => {
       const cachedResponse = await cache.get(cacheKey);
 
       if (cachedResponse) {
-        logger.info(`🔁 Duplicate request detected with idempotency key: ${idempotencyKey}`);
-        
+        logger.system('IDEMPOTENCY_DUPLICATE_REQUEST', 'Duplicate request detected', { idempotencyKeySuffix: idempotencyKey ? idempotencyKey.slice(-6) : undefined });
+
         // Return the cached response
         return res.status(cachedResponse.statusCode || 200).json(cachedResponse.body);
       }
@@ -40,7 +40,7 @@ const checkIdempotency = (ttl = 86400) => {
       const isProcessing = await cache.get(processingKey);
 
       if (isProcessing) {
-        logger.warn(`⚠️ Request with idempotency key ${idempotencyKey} is already being processed`);
+        logger.system('IDEMPOTENCY_ALREADY_PROCESSING', 'Idempotency key is already being processed', { idempotencyKeySuffix: idempotencyKey ? idempotencyKey.slice(-6) : undefined }, { level: 'warn', severity: 'medium' });
         return next(new AppError('Request is already being processed. Please wait.', 409));
       }
 
@@ -63,10 +63,10 @@ const checkIdempotency = (ttl = 86400) => {
 
           cache
             .set(cacheKey, responseToCache, ttl)
-            .catch((err) => logger.error('Failed to cache idempotent response:', err));
+            .catch((err) => logger.system('IDEMPOTENCY_CACHE_SET_FAILED', 'Failed to cache idempotent response', { errorMessage: err?.message || String(err) }, { level: 'error' }));
 
           // Remove processing flag
-          cache.del(processingKey).catch((err) => logger.error('Failed to remove processing flag:', err));
+          cache.del(processingKey).catch((err) => logger.system('IDEMPOTENCY_CACHE_DEL_FAILED', 'Failed to remove processing flag', { errorMessage: err?.message || String(err) }, { level: 'error' }));
         }
 
         return originalJson.call(this, body);
@@ -83,10 +83,10 @@ const checkIdempotency = (ttl = 86400) => {
 
           cache
             .set(cacheKey, responseToCache, ttl)
-            .catch((err) => logger.error('Failed to cache idempotent response:', err));
+            .catch((err) => logger.system('IDEMPOTENCY_CACHE_SET_FAILED', 'Failed to cache idempotent response', { errorMessage: err?.message || String(err) }, { level: 'error' }));
 
           // Remove processing flag
-          cache.del(processingKey).catch((err) => logger.error('Failed to remove processing flag:', err));
+          cache.del(processingKey).catch((err) => logger.system('IDEMPOTENCY_CACHE_DEL_FAILED', 'Failed to remove processing flag', { errorMessage: err?.message || String(err) }, { level: 'error' }));
         }
 
         return originalSend.call(this, body);
@@ -94,7 +94,7 @@ const checkIdempotency = (ttl = 86400) => {
 
       next();
     } catch (error) {
-      logger.error('Idempotency middleware error:', error);
+      logger.system('IDEMPOTENCY_ERROR', 'Idempotency middleware error', { errorMessage: error?.message || String(error) }, { level: 'error', severity: 'high' });
       // Don't block request if cache fails
       next();
     }

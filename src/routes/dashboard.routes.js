@@ -5,35 +5,15 @@ const { getDashboardStats, getBusinessInsights, getDashboardFull } = require('..
 const { buildDashboardBundle } = require('../services/dashboard.service');
 const logger = require('../utils/logger');
 
-if (process.env.NODE_ENV === 'development') {
-	router.use((req, res, next) => {
-		const startedAt = Date.now();
-		logger.info(`[DASHBOARD_DEBUG] router entry ${JSON.stringify({
-			method: req.method,
-			path: req.originalUrl,
-			hasAuthorization: !!req.headers.authorization,
-		})}`);
-
-		res.on('finish', () => {
-			logger.info(`[DASHBOARD_DEBUG] router finish ${JSON.stringify({
-				method: req.method,
-				path: req.originalUrl,
-				statusCode: res.statusCode,
-				durationMs: Date.now() - startedAt,
-			})}`);
-		});
-
-		next();
-	});
-}
-
 // Development-only quick debug route to build the bundle without auth
 if (process.env.NODE_ENV === 'development') {
 	router.get('/stats-debug', async (req, res, next) => {
 		try {
 			const started = Date.now();
 			const bundle = await buildDashboardBundle();
-			logger.info(`[DASHBOARD_DEBUG] stats-debug built durationMs=${Date.now() - started}`);
+			logger.business('DASHBOARD_BUNDLE_BUILT', 'Dashboard stats debug bundle built', {
+				durationMs: Date.now() - started,
+			}, { level: 'debug' });
 			return res.status(200).json({ status: 'success', data: bundle.stats });
 		} catch (err) {
 			return next(err);
