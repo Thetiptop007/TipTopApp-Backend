@@ -53,9 +53,20 @@ exports.registerSchema = Joi.object({
         'Please provide a valid 10-digit Indian phone number',
     }),
 
-  role: Joi.string().valid('customer').default('customer').messages({
-    'any.only': 'Invalid role. You can only register as a customer.',
-  }),
+  role: Joi.forbidden(),
+
+  permissions: Joi.forbidden(),
+  privileges: Joi.forbidden(),
+  isAdmin: Joi.forbidden(),
+  isBlocked: Joi.forbidden(),
+  isActive: Joi.forbidden(),
+  authSessions: Joi.forbidden(),
+  deviceTokens: Joi.forbidden(),
+  emailVerificationToken: Joi.forbidden(),
+  emailVerificationExpires: Joi.forbidden(),
+  passwordChangedAt: Joi.forbidden(),
+  passwordResetToken: Joi.forbidden(),
+  passwordResetExpires: Joi.forbidden(),
 
   addresses: Joi.array()
     .items(
@@ -284,6 +295,20 @@ exports.deleteAccountSchema = Joi.object({
   password: Joi.string().required().messages({
     'string.empty': 'Password is required to deactivate account',
   }),
+
+  permissions: Joi.forbidden(),
+  privileges: Joi.forbidden(),
+  role: Joi.forbidden(),
+  isAdmin: Joi.forbidden(),
+  isBlocked: Joi.forbidden(),
+  isActive: Joi.forbidden(),
+  authSessions: Joi.forbidden(),
+  deviceTokens: Joi.forbidden(),
+  emailVerificationToken: Joi.forbidden(),
+  emailVerificationExpires: Joi.forbidden(),
+  passwordChangedAt: Joi.forbidden(),
+  passwordResetToken: Joi.forbidden(),
+  passwordResetExpires: Joi.forbidden(),
 });
 
 /** * Validation schema for changing password

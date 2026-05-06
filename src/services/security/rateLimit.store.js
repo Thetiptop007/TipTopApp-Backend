@@ -34,7 +34,7 @@ class RateLimitStore {
 
   _startMemoryCleanup() {
     // Clean up expired entries every 5 minutes
-    setInterval(() => {
+    this.memoryCleanupInterval = setInterval(() => {
       const now = Date.now();
       for (const [key, data] of this.memory.counters.entries()) {
         if (data.expiry < now) {
@@ -42,6 +42,13 @@ class RateLimitStore {
         }
       }
     }, 5 * 60 * 1000);
+  }
+
+  shutdown() {
+    if (this.memoryCleanupInterval) {
+      clearInterval(this.memoryCleanupInterval);
+      this.memoryCleanupInterval = null;
+    }
   }
 
   /**
@@ -281,7 +288,15 @@ function getOrCreateStore(redisClient = null) {
   return storeInstance;
 }
 
+function resetStoreForTests() {
+  if (storeInstance && typeof storeInstance.shutdown === 'function') {
+    storeInstance.shutdown();
+  }
+  storeInstance = null;
+}
+
 module.exports = {
   RateLimitStore,
   getOrCreateStore,
+  resetStoreForTests,
 };

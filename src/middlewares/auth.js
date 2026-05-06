@@ -5,6 +5,12 @@ const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
 const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/securityAudit.logger');
+const { incrementRoleMismatch, incrementTokenMismatch } = require('../services/metrics.service');
+
+const getTokenType = (decoded = {}) => decoded.type || decoded.tokenType || null;
+const getTokenSubject = (decoded = {}) => decoded.sub || decoded.id || null;
+const getTokenSessionId = (decoded = {}) => decoded.sid || decoded.sessionId || null;
+const getScopeFromRole = (role) => (role === 'admin' ? 'admin' : role === 'customer' ? 'customer' : null);
 
 /**
  * Protect middleware - Verifies JWT token and authenticates user
@@ -16,16 +22,11 @@ const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/secur
  * 5. User hasn't changed password after token was issued
  */
 exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) => {
-  // 1) Get token from header
+  // 1) Extract bearer token
   let token;
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith('Bearer')
-  ) {
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
     token = req.headers.authorization.split(' ')[1];
   }
-
-
 
   if (!token) {
     logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
@@ -34,12 +35,10 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
       method: req.method,
       ip: req.ip,
     }, { level: 'warn', severity: 'medium' });
-    return next(
-      new AppError('You are not logged in. Please log in to get access.', 401)
-    );
+    return next(new AppError('You are not logged in. Please log in to get access.', 401));
   }
 
-  // 2) Verify token
+  // 2) Verify JWT signature
   let decoded;
   try {
     decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
@@ -54,75 +53,122 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
       return next(new AppError('Invalid token. Please log in again.', 401));
     }
     if (error.name === 'TokenExpiredError') {
-      return next(
-        new AppError('Your token has expired. Please log in again.', 401)
-      );
+      return next(new AppError('Your token has expired. Please log in again.', 401));
     }
     return next(error);
   }
 
-  // Environment-gated debug logging
-  if (process.env.LOG_DEBUG_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
-    logger.auth('AUTH_TOKEN_VERIFIED', 'Token verified successfully', {
-      userId: decoded.id,
-      scope: decoded.scope || null,
-    }, { level: 'debug' });
-  }
-
-  if (requiredScope && decoded.scope && decoded.scope !== requiredScope) {
-    logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
-      reason: 'invalid_scope_in_token',
-      requiredScope,
-      providedScope: decoded.scope,
+  // 3) Enforce access token type
+  const tokenType = getTokenType(decoded);
+  if (tokenType !== 'access') {
+    logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
+      reason: 'wrong_token_type_for_protected_route',
+      tokenType,
       path: req.originalUrl,
       method: req.method,
       ip: req.ip,
     }, { level: 'warn', severity: 'high' });
+    return next(new AppError('Invalid authentication token type.', 401));
+  }
+
+  const userId = getTokenSubject(decoded);
+  const tokenRole = decoded.role || null;
+  const tokenSessionId = getTokenSessionId(decoded);
+  const tokenScope = getScopeFromRole(tokenRole);
+
+  if (!userId || !tokenRole || !tokenScope || !tokenSessionId) {
+    logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
+      reason: 'invalid_token_claims',
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
+    return next(new AppError('Invalid token claims.', 401));
+  }
+
+  if (requiredScope && tokenScope !== requiredScope) {
+    logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
+      reason: 'token_scope_mismatch',
+      userId,
+      tokenScope,
+      requiredScope,
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
+    try { incrementRoleMismatch(requiredScope || tokenScope); } catch (e) {}
     return next(new AppError('Invalid authentication scope.', 403));
   }
 
-  // 3) Check if user still exists
-  const user = await User.findById(decoded.id).select('+isActive');
-
-  // Environment-gated debug logging
-  if (process.env.LOG_DEBUG_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
-    logger.auth('AUTH_DEBUG', 'User lookup completed', {
-      userFound: !!user,
-      role: user?.role || null,
-      isActive: user?.isActive,
-    }, { level: 'debug' });
-  }
+  // 4) Load user
+  const user = await User.findById(userId).select('+isActive');
   if (!user) {
     logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
       reason: 'user_not_found_for_token',
-      userId: decoded.id,
+      userId,
       path: req.originalUrl,
       method: req.method,
       ip: req.ip,
     }, { level: 'warn', severity: 'high' });
-    return next(
-      new AppError('The user belonging to this token no longer exists.', 401)
-    );
+    return next(new AppError('The user belonging to this token no longer exists.', 401));
   }
 
-  // 4) Check if user is active
+  const migration = await user.normalizeRoleFromLegacy();
+  if (migration.migrated) {
+    logger.auth('AUTH_ROLE_MIGRATED', 'Legacy roles migrated to canonical role', {
+      userId: user._id.toString(),
+      migratedRole: migration.role,
+    });
+  }
+
+  // 5.a) Session version check - tokens carry `sv` claim and must match user's sessionVersion
+  try {
+    const tokenSv = decoded.sv || 0;
+    const userSv = user.sessionVersion || 0;
+    if (tokenSv !== userSv) {
+      logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
+        reason: 'session_version_mismatch',
+        userId: user._id.toString(),
+        tokenSv,
+        userSv,
+        path: req.originalUrl,
+        method: req.method,
+        ip: req.ip,
+      }, { level: 'warn', severity: 'high' });
+      return next(new AppError('Session is no longer valid. Please log in again.', 401));
+    }
+  } catch (e) {
+    // ignore and continue - safety net
+  }
+
+  // 5) Validate user state
   if (!user.isActive) {
-    return next(
-      new AppError('Your account has been deactivated. Please contact support.', 401)
-    );
+    logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
+      reason: 'inactive_user',
+      userId: user._id.toString(),
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
+    return next(new AppError('Your account has been deactivated. Please contact support.', 401));
   }
 
   if (user.isBlocked) {
-    return next(
-      new AppError('Your account has been blocked. Please contact support.', 403)
-    );
+    logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
+      reason: 'blocked_user',
+      userId: user._id.toString(),
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
+    return next(new AppError('Your account has been blocked. Please contact support.', 403));
   }
 
   if (requiredScope && user.role !== requiredScope) {
     logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
       reason: 'user_scope_mismatch',
       userId: user._id.toString(),
-      role: req.user?.role,
+      userRole: user.role,
       requiredScope,
       path: req.originalUrl,
       method: req.method,
@@ -131,28 +177,53 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
     return next(new AppError('Invalid authentication scope.', 403));
   }
 
-  // 5) Check if user changed password after token was issued
+  // 6) Validate role-scoped DB session and token hash
+  const scope = requiredScope || tokenScope;
+  const sessionCheck = await user.verifyAccessSession(scope, {
+    accessToken: token,
+    sessionId: tokenSessionId,
+  });
+
+  if (!sessionCheck.valid) {
+    logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
+      reason: sessionCheck.reason || 'session_validation_failed',
+      userId: user._id.toString(),
+      scope,
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
+    try { incrementTokenMismatch(scope, sessionCheck.reason || 'session_validation_failed'); } catch (e) {}
+    return next(new AppError('Session is no longer valid. Please log in again.', 401));
+  }
+
+  // 7) Password rotation invalidates old tokens
   if (user.passwordChangedAt) {
-    const changedTimestamp = parseInt(
-      user.passwordChangedAt.getTime() / 1000,
-      10
-    );
+    const changedTimestamp = parseInt(user.passwordChangedAt.getTime() / 1000, 10);
     if (decoded.iat < changedTimestamp) {
-      return next(
-        new AppError('User recently changed password. Please log in again.', 401)
-      );
+      return next(new AppError('User recently changed password. Please log in again.', 401));
     }
   }
 
-  // Grant access to protected route
+  // 8) Attach normalized auth context
   req.user = user;
+  req.auth = {
+    authenticated: true,
+    role: user.role,
+    scope,
+    sessionId: tokenSessionId,
+    expiresAt: sessionCheck.session?.expiresAt || null,
+    authVersion: 'v2',
+  };
+
+  // 9) allow request
   next();
 });
 
 /**
- * Restrict to middleware - Restricts access based on user roles
+ * Restrict to middleware - Restricts access based on user role
  * Usage: restrictTo('admin', 'manager')
- * Checks if user has ANY of the required roles
+ * Checks if user has the required role
  */
 exports.restrictTo = (...roles) => {
   return (req, res, next) => {
@@ -163,20 +234,19 @@ exports.restrictTo = (...roles) => {
       );
     }
 
-    // Check if user has any of the required roles
-    const userRoles = req.user.roles || [req.user.role];
-    const hasRequiredRole = roles.some(role => userRoles.includes(role));
+    // Check if user's role matches one of the required roles
+    const hasRequiredRole = roles.includes(req.user.role);
 
     if (!hasRequiredRole) {
       logger.auth('AUTH_ACCESS_DENIED', 'Access denied due to insufficient role', {
         userId: req.user._id.toString(),
-        userRoles,
+        userRole: req.user.role,
         requiredRoles: roles,
       });
       logSecurityAudit(SECURITY_EVENTS.FORBIDDEN_ACCESS, {
         reason: 'role_restriction_denied',
         userId: req.user._id.toString(),
-        userRoles,
+        userRole: req.user.role,
         requiredRoles: roles,
         path: req.originalUrl,
         method: req.method,

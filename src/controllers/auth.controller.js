@@ -5,10 +5,22 @@ const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
+const { rejectPrivilegePayload } = require('../utils/privilege-guard');
 const notificationService = require('../services/notification.service');
 const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/securityAudit.logger');
 const { logAuthEvent } = require('../services/logging/auth.logger');
-const { incrementLoginOutcome } = require('../services/metrics.service');
+const {
+  incrementLoginOutcome,
+  incrementRefreshOutcome,
+  incrementRefreshReplayDenied,
+  incrementRoleMismatch,
+  incrementTokenMismatch,
+} = require('../services/metrics.service');
+
+const AUTH_VERSION = 'v2';
+const getTokenType = (decoded = {}) => decoded.type || decoded.tokenType || null;
+const getTokenSubject = (decoded = {}) => decoded.sub || decoded.id || null;
+const getTokenSessionId = (decoded = {}) => decoded.sid || decoded.sessionId || null;
 
 const getAuthScope = (req, user = null) => {
   const route = String(req.originalUrl || req.baseUrl || req.path || '').toLowerCase();
@@ -108,14 +120,61 @@ const clearCsrfCookie = (res, scope) => {
   res.clearCookie(getCsrfCookieName(scope), getLegacyCsrfCookieOptions());
 };
 
-const buildAuthResponse = ({ user, message, statusCode, scope, accessToken, res }) => {
+const parseDurationToMs = (value, fallbackMs) => {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d+)([smhd])$/i);
+
+  if (!match) {
+    return fallbackMs;
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const unitMs = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+
+  return amount * unitMs[unit];
+};
+
+const getSessionExpiry = () => new Date(Date.now() + parseDurationToMs(process.env.JWT_REFRESH_EXPIRE || '7d', 7 * 24 * 60 * 60 * 1000));
+
+const serializeAuthUser = (user) => {
+  if (!user) {
+    return null;
+  }
+
+  const fullName = typeof user.name === 'string'
+    ? user.name
+    : `${user.name?.first || ''} ${user.name?.last || ''}`.trim();
+
+  return {
+    id: user._id,
+    _id: user._id,
+    role: user.role,
+    name: fullName,
+    email: user.email?.address || null,
+    phone: user.phone?.number || null,
+    isActive: user.isActive !== false,
+  };
+};
+
+const buildAuthResponse = ({ user, message, statusCode, scope, accessToken, res, expiresAt = null, authenticated = true }) => {
   const csrfToken = setCsrfCookie(res, scope);
+  const safeUser = serializeAuthUser(user);
 
   return res.status(statusCode).json({
     status: 'success',
     message,
     data: {
-      user,
+      user: safeUser,
+      role: safeUser?.role || scope,
+      authenticated,
+      expiresAt,
+      authVersion: AUTH_VERSION,
       tokens: {
         accessToken,
         expiresIn: process.env.JWT_EXPIRES_IN || '7d',
@@ -130,17 +189,31 @@ const buildAuthResponse = ({ user, message, statusCode, scope, accessToken, res 
  */
 const createSendToken = async (user, statusCode, res, message = 'Success') => {
   const scope = user.role === 'admin' ? 'admin' : 'customer';
+  const sessionId = crypto.randomUUID();
+  user.authSessions = user.authSessions || {};
+  user.authSessions[scope] = {
+    ...(user.authSessions[scope] || {}),
+    sessionId,
+    issuedAt: new Date(),
+    expiresAt: getSessionExpiry(),
+    lastUsedAt: new Date(),
+  };
+
   const accessToken = user.generateAuthToken(scope);
   const refreshToken = user.generateRefreshToken(scope);
 
-  await user.storeRefreshSession(scope, refreshToken);
+  await user.storeAuthSession(scope, { accessToken, refreshToken, sessionId });
   // Update last login
   await user.updateLastLogin();
   setRefreshCookie(res, scope, refreshToken);
 
-  // Remove password from output
-  user.password = undefined;
-  user.refreshToken = undefined;
+  logAuthEvent('AUTH_LOGIN_SESSION_ISSUED', {
+    userId: user._id.toString(),
+    role: user.role,
+    scope,
+    sessionId,
+    expiresAt: user.authSessions?.[scope]?.expiresAt || null,
+  }, 'info', 'medium');
 
   buildAuthResponse({
     user,
@@ -148,9 +221,44 @@ const createSendToken = async (user, statusCode, res, message = 'Success') => {
     statusCode,
     scope,
     accessToken,
+    expiresAt: user.authSessions?.[scope]?.expiresAt || null,
     res,
   });
 };
+
+/**
+ * Admin operational endpoint: revoke all sessions for a specific user (increment sessionVersion)
+ * POST /api/v1/auth/admin/ops/revoke/user/:id
+ */
+exports.revokeUserSessions = catchAsync(async (req, res, next) => {
+  const targetId = req.params.id;
+  if (!targetId) return next(new AppError('Target user id required', 400));
+
+  const targetUser = await User.findById(targetId).select('+sessionVersion');
+  if (!targetUser) return next(new AppError('User not found', 404));
+
+  const newVersion = await targetUser.incrementSessionVersion();
+
+  logSecurityAudit(SECURITY_EVENTS.AUTH_SESSION_REVOKED, {
+    action: 'revoke_user_sessions',
+    targetUserId: targetUser._id.toString(),
+    actorId: req.user?._id?.toString() || null,
+    previousVersion: (newVersion || 0) - 1,
+    newVersion,
+  }, { level: 'info', severity: 'high' });
+
+  logAuthEvent('AUTH_SESSION_REVOKED', {
+    userId: targetUser._id.toString(),
+    actorId: req.user?._id?.toString() || null,
+    newVersion,
+  }, 'info', 'high');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'User sessions revoked',
+    data: { userId: targetUser._id.toString(), newVersion },
+  });
+});
 
 /**
  * Register device token for push notifications
@@ -225,6 +333,14 @@ exports.register = catchAsync(async (req, res, next) => {
     return next(new AppError('Registration is only available for customer accounts.', 403));
   }
 
+  await rejectPrivilegePayload({
+    req,
+    actorId: null,
+    actorRole: 'anonymous',
+    reason: 'public registration attempted to include privilege-bearing fields',
+    payload: req.body,
+  });
+
   const {
     name,
     email,
@@ -234,8 +350,7 @@ exports.register = catchAsync(async (req, res, next) => {
     preferences,
   } = req.body;
 
-  // Force role to 'customer' for any public registration request.
-  // Do NOT trust client-supplied `role` or `roles` fields.
+  // Force least privilege for any public registration request.
   const role = 'customer';
 
   logger.auth('AUTH_REGISTRATION_ATTEMPT', 'User registration initiated', {
@@ -287,14 +402,13 @@ exports.register = catchAsync(async (req, res, next) => {
     },
     email: {
       address: userEmail,
-      isVerified: true,
+      isVerified: false,
     },
     password,
     phone: {
       number: phone,
-      isVerified: true,
+      isVerified: false,
     },
-    roles: [role],
     role,
   };
 
@@ -413,88 +527,6 @@ exports.login = catchAsync(async (req, res, next) => {
 });
 
 /**
- * Get current user profile
- * GET /api/v1/auth/me
- */
-exports.getMe = catchAsync(async (req, res, next) => {
-  const user = await User.findById(req.user._id);
-
-  if (!user) {
-    return next(new AppError('User not found.', 404));
-  }
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Current user loaded successfully.',
-    data: {
-      user,
-    },
-  });
-});
-
-/**
- * Update current user profile
- * PATCH /api/v1/auth/me
- */
-exports.updateMe = catchAsync(async (req, res, next) => {
-  const { name, email, phone } = req.body;
-
-  // Get user
-  const user = await User.findById(req.user._id);
-
-  if (!user) {
-    return next(new AppError('User not found.', 404));
-  }
-
-  // Update name if provided
-  if (name) {
-    if (name.first !== undefined) {
-      user.name.first = name.first;
-    }
-    if (name.last !== undefined) {
-      user.name.last = name.last;
-    }
-  }
-
-  // Update email if provided (with duplicate check)
-  if (email && email !== user.email.address) {
-    const existingUser = await User.findOne({ 'email.address': email });
-    if (existingUser) {
-      return next(
-        new AppError('This email address is already in use by another account.', 409)
-      );
-    }
-    user.email.address = email;
-    user.email.isVerified = false; // Mark as unverified when email changes
-  }
-
-  // Update phone if provided (with duplicate check)
-  if (phone && phone !== user.phone?.number) {
-    const existingUser = await User.findOne({ 'phone.number': phone });
-    if (existingUser) {
-      return next(
-        new AppError('This phone number is already in use by another account.', 409)
-      );
-    }
-    user.phone = user.phone || {};
-    user.phone.number = phone;
-    user.phone.isVerified = false; // Mark as unverified when phone changes
-  }
-
-  await user.save();
-
-  logger.auth('AUTH_PROFILE_UPDATED', 'User profile updated', { userId: user._id, updatedFields: Object.keys(updateData) });
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Profile updated successfully.',
-    data: {
-      user,
-    },
-  });
-});
-
-/**
  * Logout
  * POST /api/v1/auth/logout
  */
@@ -513,12 +545,22 @@ exports.logout = catchAsync(async (req, res, next) => {
     userRole: req.user?.role,
     scope,
   });
+  logAuthEvent('AUTH_LOGOUT', {
+    userId: req.user?._id?.toString() || null,
+    role: req.user?.role || null,
+    scope,
+  }, 'info', 'low');
 
   res.status(200).json({
     status: 'success',
     message: 'Logged out successfully.',
     data: {
       user: null,
+      role: scope,
+      authenticated: false,
+      csrfToken: null,
+      expiresAt: null,
+      authVersion: AUTH_VERSION,
     },
   });
 });
@@ -555,42 +597,154 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     return next(error);
   }
 
-  if (decoded.scope && decoded.scope !== scope) {
+  const tokenType = getTokenType(decoded);
+  const decodedUserId = getTokenSubject(decoded);
+  const tokenSessionId = getTokenSessionId(decoded);
+
+  if (tokenType !== 'refresh') {
     clearRefreshCookie(res, scope);
     clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: 'wrong_token_type',
+      scope,
+      tokenType,
+    }, 'warn', 'high');
+    return next(new AppError('Invalid token type for refresh endpoint.', 401));
+  }
+
+  if (!decodedUserId || !decoded.role || !tokenSessionId) {
+    clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: 'invalid_refresh_claims',
+      scope,
+    }, 'warn', 'high');
+    return next(new AppError('Invalid refresh token claims.', 401));
+  }
+
+  const expectedScope = decoded.role === 'admin' ? 'admin' : 'customer';
+  if (expectedScope !== scope) {
+    clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: 'scope_mismatch',
+      scope,
+      expectedScope,
+    }, 'warn', 'high');
     return next(new AppError('Invalid refresh token scope.', 401));
   }
 
   // Check if user still exists
-  const user = await User.findById(decoded.id).select('+isActive');
+  const user = await User.findById(decodedUserId).select('+isActive');
   if (!user) {
+    clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: 'user_not_found',
+      scope,
+      userId: decodedUserId,
+    }, 'warn', 'high');
     return next(new AppError('User no longer exists.', 401));
+  }
+
+  const migration = await user.normalizeRoleFromLegacy();
+  if (migration.migrated) {
+    logAuthEvent('AUTH_ROLE_MIGRATED', {
+      userId: user._id.toString(),
+      migratedRole: migration.role,
+    }, 'info', 'medium');
   }
 
   // Check if user is active
   if (!user.isActive) {
+    await user.revokeRefreshSession(scope);
+    clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: 'inactive_user',
+      userId: user._id.toString(),
+      scope,
+    }, 'warn', 'high');
     return next(new AppError('Your account has been deactivated.', 401));
   }
 
+  if (user.isBlocked) {
+    await user.revokeRefreshSession(scope);
+    clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: 'blocked_user',
+      userId: user._id.toString(),
+      scope,
+    }, 'warn', 'high');
+    return next(new AppError('Your account has been blocked.', 403));
+  }
+
   if (scope === 'admin' && user.role !== 'admin') {
+    await user.revokeRefreshSession(scope);
+    clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: 'role_mismatch',
+      userId: user._id.toString(),
+      scope,
+      userRole: user.role,
+    }, 'warn', 'high');
     return next(new AppError('Invalid refresh token scope.', 401));
   }
 
   if (scope === 'customer' && user.role !== 'customer') {
+    await user.revokeRefreshSession(scope);
+    clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: 'role_mismatch',
+      userId: user._id.toString(),
+      scope,
+      userRole: user.role,
+    }, 'warn', 'high');
     return next(new AppError('Invalid refresh token scope.', 401));
   }
 
-  const tokenMatchesSession = await user.verifyRefreshSession(scope, refreshToken);
-  if (!tokenMatchesSession) {
+  const sessionCheck = await user.verifyRefreshSession(scope, refreshToken, tokenSessionId);
+  if (!sessionCheck.valid) {
+    await user.revokeRefreshSession(scope);
     clearRefreshCookie(res, scope);
+    clearCsrfCookie(res, scope);
+    logAuthEvent('AUTH_REFRESH_DENIED', {
+      reason: sessionCheck.reason || 'refresh_session_validation_failed',
+      userId: user._id.toString(),
+      scope,
+      sessionId: tokenSessionId,
+    }, 'warn', 'high');
+    try {
+      incrementRefreshOutcome(scope, 'denied');
+      if (sessionCheck.reason && (sessionCheck.reason.includes('mismatch') || sessionCheck.reason.includes('missing'))) {
+        incrementRefreshReplayDenied(scope);
+      }
+    } catch (e) {}
     return next(new AppError('Invalid refresh token.', 401));
   }
 
   // Generate new access token
+  const nextSessionId = crypto.randomUUID();
+  user.authSessions = user.authSessions || {};
+  user.authSessions[scope] = {
+    ...(user.authSessions[scope] || {}),
+    sessionId: nextSessionId,
+    issuedAt: new Date(),
+    expiresAt: getSessionExpiry(),
+    lastUsedAt: new Date(),
+  };
+
   const newAccessToken = user.generateAuthToken(scope);
   const newRefreshToken = user.generateRefreshToken(scope);
 
-  await user.storeRefreshSession(scope, newRefreshToken);
+  await user.storeAuthSession(scope, {
+    accessToken: newAccessToken,
+    refreshToken: newRefreshToken,
+    sessionId: nextSessionId,
+  });
   setRefreshCookie(res, scope, newRefreshToken);
   const csrfToken = setCsrfCookie(res, scope);
 
@@ -599,12 +753,28 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     role: user.role,
     scope,
   });
+  logAuthEvent('AUTH_REFRESH_SUCCESS', {
+    userId: user._id.toString(),
+    role: user.role,
+    scope,
+    sessionId: nextSessionId,
+    previousSessionId: tokenSessionId,
+    expiresAt: user.authSessions?.[scope]?.expiresAt || null,
+  }, 'info', 'medium');
+
+  try {
+    incrementRefreshOutcome(scope, 'success');
+  } catch (e) {}
 
   res.status(200).json({
     status: 'success',
     message: 'Token refreshed successfully.',
     data: {
-      user,
+      user: serializeAuthUser(user),
+      role: user.role,
+      authenticated: true,
+      expiresAt: user.authSessions?.[scope]?.expiresAt || null,
+      authVersion: AUTH_VERSION,
       tokens: {
         accessToken: newAccessToken,
         expiresIn: process.env.JWT_EXPIRES_IN || '7d',
@@ -821,10 +991,20 @@ exports.sendVerificationEmail = catchAsync(async (req, res, next) => {
 exports.getMe = catchAsync(async (req, res, next) => {
   const user = await User.findById(req.user._id);
 
+  if (!user) {
+    return next(new AppError('User not found.', 404));
+  }
+
   res.status(200).json({
     status: 'success',
+    message: 'Current user loaded successfully.',
     data: {
-      user,
+      user: serializeAuthUser(user),
+      role: user.role,
+      authenticated: true,
+      csrfToken: null,
+      expiresAt: req.auth?.expiresAt || user.authSessions?.[req.auth?.scope || (user.role === 'admin' ? 'admin' : 'customer')]?.expiresAt || null,
+      authVersion: AUTH_VERSION,
     },
   });
 });
@@ -839,6 +1019,14 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       payloadKeys: Object.keys(req.body || {}),
     }, { level: 'debug' });
   }
+
+  await rejectPrivilegePayload({
+    req,
+    actorId: req.user._id,
+    actorRole: req.user.role,
+    reason: 'self-service profile update attempted privilege mutation',
+    payload: req.body,
+  });
   
   // Don't allow password update through this route
   if (req.body.password || req.body.passwordConfirm) {

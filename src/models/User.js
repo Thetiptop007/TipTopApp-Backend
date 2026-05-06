@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 // Address Sub-schema
 const addressSchema = new mongoose.Schema({
@@ -85,23 +86,12 @@ const userSchema = new mongoose.Schema(
       minlength: [8, 'Password must be at least 8 characters'],
       select: false,
     },
-    roles: {
-      type: [String],
-      enum: ['customer', 'delivery', 'admin'],
-      default: ['customer'],
-      validate: {
-        validator: function(v) {
-          // Ensure no duplicate roles
-          return v.length === new Set(v).size;
-        },
-        message: 'Duplicate roles are not allowed'
-      }
-    },
-    // Keep 'role' for backward compatibility (returns primary role)
+    // Canonical role field - single source of truth for authorization
     role: {
       type: String,
       enum: ['customer', 'delivery', 'admin'],
       default: 'customer',
+      required: [true, 'User role is required'],
     },
 
     // Profile
@@ -216,12 +206,18 @@ const userSchema = new mongoose.Schema(
     // Refresh token sessions (one active session per scope)
     authSessions: {
       admin: {
+        sessionId: String,
+        accessTokenHash: String,
+        refreshTokenHash: String,
         tokenHash: String,
         issuedAt: Date,
         expiresAt: Date,
         lastUsedAt: Date,
       },
       customer: {
+        sessionId: String,
+        accessTokenHash: String,
+        refreshTokenHash: String,
         tokenHash: String,
         issuedAt: Date,
         expiresAt: Date,
@@ -299,6 +295,12 @@ const userSchema = new mongoose.Schema(
     },
 
     lastLogin: Date,
+    // Session version for global per-user invalidation
+    sessionVersion: {
+      type: Number,
+      default: 0,
+      select: false,
+    },
   },
   {
     timestamps: true,
@@ -329,20 +331,6 @@ userSchema.virtual('defaultAddress').get(function () {
     return null;
   }
   return this.addresses.find((addr) => addr.isDefault);
-});
-
-// Sync primary role with roles array
-userSchema.pre('save', function () {
-  if (this.roles && this.roles.length > 0) {
-    // Set primary role based on priority: admin > delivery > customer
-    if (this.roles.includes('admin')) {
-      this.role = 'admin';
-    } else if (this.roles.includes('delivery')) {
-      this.role = 'delivery';
-    } else {
-      this.role = 'customer';
-    }
-  }
 });
 
 // Hash password before saving
@@ -420,37 +408,24 @@ const parseJwtExpirySeconds = (rawValue) => {
 };
 
 userSchema.methods.generateAuthToken = function (scope = this.getRefreshScope()) {
-  return jwt.sign({ id: this._id, role: this.role, roles: this.roles, scope, tokenType: 'access' }, process.env.JWT_SECRET, {
+  const session = this.authSessions?.[scope] || null;
+  const sid = session?.sessionId || null;
+
+  const sv = this.sessionVersion || 0;
+
+  return jwt.sign({ sub: this._id.toString(), role: this.role, type: 'access', sid, sv, v: 1 }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE,
   });
 };
 
-// Check if user has a specific role
-userSchema.methods.hasRole = function (role) {
-  return this.roles && this.roles.includes(role);
-};
-
-// Add a role to user
-userSchema.methods.addRole = function (role) {
-  if (!this.roles) {
-    this.roles = [];
-  }
-  if (!this.roles.includes(role)) {
-    this.roles.push(role);
-  }
-};
-
-// Remove a role from user
-userSchema.methods.removeRole = function (role) {
-  if (!this.roles) {
-    return;
-  }
-  this.roles = this.roles.filter(r => r !== role);
-};
-
 // Generate refresh token
 userSchema.methods.generateRefreshToken = function (scope = this.getRefreshScope()) {
-  return jwt.sign({ id: this._id, role: this.role, scope, tokenType: 'refresh' }, process.env.JWT_REFRESH_SECRET, {
+  const session = this.authSessions?.[scope] || null;
+  const sid = session?.sessionId || null;
+
+  const sv = this.sessionVersion || 0;
+
+  return jwt.sign({ sub: this._id.toString(), role: this.role, type: 'refresh', sid, sv, v: 1 }, process.env.JWT_REFRESH_SECRET, {
     expiresIn: process.env.JWT_REFRESH_EXPIRE,
   });
 };
@@ -459,27 +434,65 @@ userSchema.methods.getRefreshScope = function () {
   return this.role === 'admin' ? 'admin' : 'customer';
 };
 
-userSchema.methods.storeRefreshSession = async function (scope, refreshToken) {
-  const tokenHash = bcrypt.hashSync(refreshToken, 12);
-  const expiresIn = String(process.env.JWT_REFRESH_EXPIRE || '7d').trim();
-  const match = expiresIn.match(/^(\d+)([smhd])$/i);
+const parseDurationToMs = (value, fallbackMs) => {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d+)([smhd])$/i);
+
+  if (!match) {
+    return fallbackMs;
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
   const unitMs = {
     s: 1000,
     m: 60 * 1000,
     h: 60 * 60 * 1000,
     d: 24 * 60 * 60 * 1000,
   };
-  const expiresAt = new Date(Date.now() + (match ? Number(match[1]) * unitMs[match[2].toLowerCase()] : 7 * 24 * 60 * 60 * 1000));
+
+  return amount * unitMs[unit];
+};
+
+userSchema.methods.storeAuthSession = async function (scope, { accessToken, refreshToken, sessionId } = {}) {
+  if (!scope || !['admin', 'customer'].includes(scope)) {
+    throw new Error('Invalid session scope');
+  }
+
+  if (!accessToken || !refreshToken) {
+    throw new Error('Both access and refresh tokens are required to store auth session');
+  }
+
+  const nextSessionId = sessionId || crypto.randomUUID();
+  const accessTokenHash = bcrypt.hashSync(accessToken, 12);
+  const refreshTokenHash = bcrypt.hashSync(refreshToken, 12);
+  const expiresIn = String(process.env.JWT_REFRESH_EXPIRE || '7d').trim();
+  const expiresAt = new Date(Date.now() + parseDurationToMs(expiresIn, 7 * 24 * 60 * 60 * 1000));
 
   this.authSessions = this.authSessions || {};
   this.authSessions[scope] = {
-    tokenHash,
+    sessionId: nextSessionId,
+    accessTokenHash,
+    refreshTokenHash,
+    tokenHash: refreshTokenHash,
     issuedAt: new Date(),
     expiresAt,
     lastUsedAt: new Date(),
   };
 
   await this.save({ validateBeforeSave: false });
+  return this.authSessions[scope];
+};
+
+userSchema.methods.storeRefreshSession = async function (scope, refreshToken) {
+  const placeholderAccessToken = jwt.sign({ sub: this._id.toString(), role: this.role, type: 'access', sid: crypto.randomUUID(), v: 1 }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRE,
+  });
+
+  return this.storeAuthSession(scope, {
+    accessToken: placeholderAccessToken,
+    refreshToken,
+  });
 };
 
 userSchema.methods.revokeRefreshSession = async function (scope) {
@@ -489,23 +502,102 @@ userSchema.methods.revokeRefreshSession = async function (scope) {
   }
 };
 
-userSchema.methods.verifyRefreshSession = async function (scope, refreshToken) {
-  if (!this.authSessions || !this.authSessions[scope] || !this.authSessions[scope].tokenHash) {
-    return false;
+userSchema.methods.verifyAccessSession = async function (scope, { accessToken, sessionId } = {}) {
+  const session = this.authSessions?.[scope];
+  if (!session || !session.accessTokenHash || !session.sessionId) {
+    return { valid: false, reason: 'missing_session' };
   }
 
-  const isValid = await bcrypt.compare(refreshToken, this.authSessions[scope].tokenHash);
-  if (isValid) {
-    this.authSessions[scope].lastUsedAt = new Date();
-    await this.save({ validateBeforeSave: false });
+  if (!accessToken || !sessionId) {
+    return { valid: false, reason: 'missing_token_or_session_id' };
   }
 
-  return isValid;
+  if (session.sessionId !== sessionId) {
+    return { valid: false, reason: 'session_id_mismatch' };
+  }
+
+  if (session.expiresAt && session.expiresAt.getTime() <= Date.now()) {
+    return { valid: false, reason: 'session_expired' };
+  }
+
+  const matches = await bcrypt.compare(accessToken, session.accessTokenHash);
+  if (!matches) {
+    return { valid: false, reason: 'access_token_mismatch' };
+  }
+
+  this.authSessions[scope].lastUsedAt = new Date();
+  await this.save({ validateBeforeSave: false });
+
+  return { valid: true, session: this.authSessions[scope] };
+};
+
+userSchema.methods.verifyRefreshSession = async function (scope, refreshToken, sessionId = null) {
+  const session = this.authSessions?.[scope];
+  if (!session || !session.refreshTokenHash || !session.sessionId) {
+    return { valid: false, reason: 'missing_session' };
+  }
+
+  if (!refreshToken) {
+    return { valid: false, reason: 'missing_refresh_token' };
+  }
+
+  if (sessionId && session.sessionId !== sessionId) {
+    return { valid: false, reason: 'session_id_mismatch' };
+  }
+
+  if (session.expiresAt && session.expiresAt.getTime() <= Date.now()) {
+    return { valid: false, reason: 'session_expired' };
+  }
+
+  const isValid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
+  if (!isValid) {
+    return { valid: false, reason: 'refresh_token_mismatch' };
+  }
+
+  this.authSessions[scope].lastUsedAt = new Date();
+  await this.save({ validateBeforeSave: false });
+
+  return { valid: true, session: this.authSessions[scope] };
+};
+
+userSchema.methods.normalizeRoleFromLegacy = async function () {
+  if (this.role) {
+    return { migrated: false, role: this.role };
+  }
+
+  const legacyRoles = this.get('roles');
+  if (!Array.isArray(legacyRoles) || legacyRoles.length === 0) {
+    return { migrated: false, role: null };
+  }
+
+  // Never auto-upgrade to admin from legacy arrays.
+  const migratedRole = legacyRoles.includes('customer')
+    ? 'customer'
+    : legacyRoles.includes('delivery')
+      ? 'delivery'
+      : null;
+
+  if (!migratedRole) {
+    return { migrated: false, role: null };
+  }
+
+  this.role = migratedRole;
+  await this.save({ validateBeforeSave: false });
+
+  return { migrated: true, role: migratedRole };
 };
 
 userSchema.methods.clearAllRefreshSessions = async function () {
   this.authSessions = {};
   await this.save({ validateBeforeSave: false });
+};
+
+userSchema.methods.incrementSessionVersion = async function () {
+  this.sessionVersion = (this.sessionVersion || 0) + 1;
+  // clear stored session blobs so existing sessions are invalidated
+  this.authSessions = {};
+  await this.save({ validateBeforeSave: false });
+  return this.sessionVersion;
 };
 
 // Update last login
@@ -555,7 +647,7 @@ userSchema.methods.getActiveDeviceTokens = function () {
 // Static method to find available delivery partners
 userSchema.statics.findAvailableDeliveryPartners = function (location, limit = 10) {
   return this.find({
-    roles: 'delivery',
+    role: 'delivery',
     isActive: true,
     'deliveryData.availability': true,
     'deliveryData.currentLocation.coordinates': {

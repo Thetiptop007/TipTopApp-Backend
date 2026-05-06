@@ -5,6 +5,8 @@ const AuditLog = require('../models/AuditLog');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
+const { rejectPrivilegePayload } = require('../utils/privilege-guard');
+const { changeUserRoleWithAudit } = require('../utils/privilege-guard');
 
 /**
  * Register new delivery partner
@@ -12,6 +14,14 @@ const logger = require('../utils/logger');
  * Admin only ...
  */
 exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
+  await rejectPrivilegePayload({
+    req,
+    actorId: req.user._id,
+    actorRole: req.user.role,
+    reason: 'delivery partner registration attempted privilege-bearing payload',
+    payload: req.body,
+  });
+
   const { name, email, phone, password, vehicleType } = req.body;
 
   logger.auth('AUTH_REGISTRATION_ATTEMPT', 'Delivery partner registration attempted', {
@@ -171,14 +181,13 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
     });
     
     // Check if user already has delivery role
-    if (exactMatch.roles && exactMatch.roles.includes('delivery')) {
+    if (exactMatch.role === 'delivery') {
       logger.auth('AUTH_ACCESS_DENIED', 'Delivery partner already has delivery role', { userId: exactMatch._id.toString() }, { level: 'warn', severity: 'medium' });
       return next(new AppError('User is already registered as a delivery partner', 400));
     }
 
-    // Safe to add delivery role - same person
+    // Safe to upgrade to delivery role - same person
     logger.auth('AUTH_REGISTRATION_SUCCESS', 'Delivery role added to existing user', { userId: exactMatch._id.toString(), vehicleType });
-    exactMatch.addRole('delivery');
     
     // Update delivery data
     exactMatch.deliveryData = {
@@ -191,32 +200,16 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
       totalEarnings: 0,
     };
 
-    await exactMatch.save();
-    deliveryPartner = exactMatch;
-    
-    // AUDIT LOG: Role addition
-    await AuditLog.create({
-      userId: exactMatch._id,
-      performedBy: req.user._id,
-      action: 'ROLE_ADDED',
-      resourceType: 'User',
-      resourceId: exactMatch._id,
-      details: {
-        reason: 'Delivery partner registration',
-        before: { roles: exactMatch.roles.filter(r => r !== 'delivery') },
-        after: { roles: exactMatch.roles },
-        roleAdded: 'delivery',
-        additionalInfo: { vehicleType: vehicleType }
-      },
-      metadata: {
-        ipAddress: req.ip || 'unknown',
-        userAgent: req.get('user-agent'),
-        requestMethod: req.method,
-        requestPath: req.originalUrl
-      },
-      severity: 'HIGH',
-      status: 'SUCCESS'
+    await changeUserRoleWithAudit({
+      req,
+      actor: req.user,
+      targetUser: exactMatch,
+      newRole: 'delivery',
+      reason: 'admin delivery partner registration upgrade',
     });
+    deliveryPartner = exactMatch;
+
+    // Audit log handled by canonical role-change helper.
     
     logger.auth('AUTH_REGISTRATION_SUCCESS', 'Delivery partner role added to existing user', { userId: exactMatch._id.toString(), vehicleType });
   } else {
@@ -235,14 +228,13 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
     },
     email: {
       address: email,
-      isVerified: true,
+      isVerified: false,
     },
     phone: {
       number: normalizedPhone,
-      isVerified: true,
+      isVerified: false,
     },
       password,
-      roles: ['delivery'],
       role: 'delivery',
       isActive: true,
       deliveryData: {
@@ -267,7 +259,7 @@ exports.registerDeliveryPartner = catchAsync(async (req, res, next) => {
       resourceId: deliveryPartner._id,
       details: {
         reason: 'New delivery partner registration',
-        roles: ['delivery'],
+        role: 'delivery',
         vehicleType: vehicleType
       },
       metadata: {
@@ -334,48 +326,23 @@ exports.deleteDeliveryPartner = catchAsync(async (req, res, next) => {
     return next(new AppError('Cannot delete delivery partner with active orders', 400));
   }
 
-  // Check if user has multiple roles
-  const hasMultipleRoles = deliveryPartner.roles && deliveryPartner.roles.length > 1;
-
-  if (hasMultipleRoles) {
-    // Just remove delivery role, keep the user account
-    deliveryPartner.removeRole('delivery');
-    
+  // Since role is now canonical, we can only have one role per user
+  // If user is delivery, they can be downgraded to customer
+  if (deliveryPartner.role === 'delivery') {
     // Clear delivery data
     deliveryPartner.deliveryData = undefined;
-    
-    // If user only has one role left, set it as primary role
-    if (deliveryPartner.roles.length === 1) {
-      deliveryPartner.role = deliveryPartner.roles[0];
-    }
-    
-    await deliveryPartner.save({ validateBeforeSave: false });
+
+    await changeUserRoleWithAudit({
+      req,
+      actor: req.user,
+      targetUser: deliveryPartner,
+      newRole: 'customer',
+      reason: 'admin delivery partner removal downgrade',
+    });
     
     logger.info(`Delivery role removed from user: ${deliveryPartner.email.address} by admin ${req.user.email.address}`);
-    logger.info(`User still has roles: ${deliveryPartner.roles.join(', ')}`);
-    
-    // Audit log
-    await AuditLog.create({
-      userId: deliveryPartner._id,
-      performedBy: req.user._id,
-      action: 'ROLE_REMOVED',
-      resourceType: 'User',
-      resourceId: deliveryPartner._id,
-      details: {
-        reason: 'Delivery partner deletion',
-        before: { roles: [...deliveryPartner.roles, 'delivery'] },
-        after: { roles: deliveryPartner.roles },
-        roleRemoved: 'delivery'
-      },
-      metadata: {
-        ipAddress: req.ip || 'unknown',
-        userAgent: req.get('user-agent'),
-        requestMethod: req.method,
-        requestPath: req.originalUrl
-      },
-      severity: 'HIGH',
-      status: 'SUCCESS'
-    });
+
+    // Audit log handled by canonical role-change helper.
   } else {
     // User only has delivery role - delete entire account
     await User.findByIdAndDelete(id);
@@ -407,9 +374,9 @@ exports.deleteDeliveryPartner = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: 'success',
-    message: hasMultipleRoles 
+    message: deliveryPartner.role === 'delivery' 
       ? 'Delivery role removed successfully' 
-      : 'Delivery partner deleted successfully',
+      : 'Delivery partner account deleted successfully',
   });
 });
 
@@ -519,7 +486,7 @@ exports.getAvailableDeliveryPartners = catchAsync(async (req, res, next) => {
   } else {
     // Get all available partners
     deliveryPartners = await User.find({
-      roles: 'delivery',
+      role: 'delivery',
       isActive: true,
       'deliveryData.availability': true,
     }).select(
@@ -847,7 +814,7 @@ exports.getUnsettledSessions = catchAsync(async (req, res, next) => {
 exports.getAllDeliveryPartners = catchAsync(async (req, res, next) => {
   const { search, status, page = 1, limit = 10 } = req.query;
 
-  const query = { roles: 'delivery' };
+  const query = { role: 'delivery' };
 
   // Search filter
   if (search) {
@@ -934,9 +901,9 @@ exports.getAllDeliveryPartners = catchAsync(async (req, res, next) => {
  * Admin only
  */
 exports.getDeliveryStats = catchAsync(async (req, res, next) => {
-  const totalPartners = await User.countDocuments({ roles: 'delivery' });
+  const totalPartners = await User.countDocuments({ role: 'delivery' });
   const availablePartners = await User.countDocuments({
-    roles: 'delivery',
+    role: 'delivery',
     'deliveryData.availability': true,
     isActive: true,
   });
@@ -952,7 +919,7 @@ exports.getDeliveryStats = catchAsync(async (req, res, next) => {
 
   const performanceStats = await User.aggregate([
     {
-      $match: { roles: 'delivery' },
+      $match: { role: 'delivery' },
     },
     {
       $group: {

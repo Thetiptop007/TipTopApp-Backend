@@ -81,6 +81,48 @@ const authLoginCounter = new client.Counter({
   registers: [register],
 });
 
+const authRefreshCounter = new client.Counter({
+  name: 'tiptop_auth_refresh_total',
+  help: 'Refresh token outcomes by scope and result',
+  labelNames: ['scope', 'result'],
+  registers: [register],
+});
+
+const authReplayDeniedCounter = new client.Counter({
+  name: 'tiptop_auth_refresh_replay_denied_total',
+  help: 'Count of refresh replay denials',
+  labelNames: ['scope'],
+  registers: [register],
+});
+
+const authTokenMismatchCounter = new client.Counter({
+  name: 'tiptop_auth_token_mismatch_total',
+  help: 'Access token mismatch counts',
+  labelNames: ['scope', 'reason'],
+  registers: [register],
+});
+
+const authRoleMismatchCounter = new client.Counter({
+  name: 'tiptop_auth_role_mismatch_total',
+  help: 'Role mismatch counts by scope',
+  labelNames: ['scope'],
+  registers: [register],
+});
+
+const authForcedLogoutCounter = new client.Counter({
+  name: 'tiptop_auth_forced_logout_total',
+  help: 'Forced logout operations by scope',
+  labelNames: ['scope', 'actor'],
+  registers: [register],
+});
+
+const authSessionExpiryCounter = new client.Counter({
+  name: 'tiptop_auth_session_expiry_total',
+  help: 'Session expiry count by scope',
+  labelNames: ['scope'],
+  registers: [register],
+});
+
 const orderCreatedCounter = new client.Counter({
   name: 'tiptop_orders_created_total',
   help: 'Order creation count by source',
@@ -163,6 +205,30 @@ function incrementLoginOutcome(scope = 'customer', result = 'success') {
   });
 }
 
+function incrementRefreshOutcome(scope = 'customer', result = 'success') {
+  authRefreshCounter.inc({ scope: String(scope), result: String(result) });
+}
+
+function incrementRefreshReplayDenied(scope = 'customer') {
+  authReplayDeniedCounter.inc({ scope: String(scope) });
+}
+
+function incrementTokenMismatch(scope = 'customer', reason = 'unknown') {
+  authTokenMismatchCounter.inc({ scope: String(scope), reason: String(reason) });
+}
+
+function incrementRoleMismatch(scope = 'customer') {
+  authRoleMismatchCounter.inc({ scope: String(scope) });
+}
+
+function incrementForcedLogout(scope = 'global', actor = 'system') {
+  authForcedLogoutCounter.inc({ scope: String(scope), actor: String(actor) });
+}
+
+function incrementSessionExpiry(scope = 'customer') {
+  authSessionExpiryCounter.inc({ scope: String(scope) });
+}
+
 function incrementOrderCreated(source = 'unknown') {
   orderCreatedCounter.inc({ source: String(source) });
 }
@@ -180,6 +246,12 @@ module.exports = {
   incrementRateLimit,
   incrementSecurityEvent,
   incrementWebhookVerificationFailure,
+  incrementRefreshOutcome,
+  incrementRefreshReplayDenied,
+  incrementTokenMismatch,
+  incrementRoleMismatch,
+  incrementForcedLogout,
+  incrementSessionExpiry,
   incrementLoginOutcome,
   incrementOrderCreated,
   metricsHandler,

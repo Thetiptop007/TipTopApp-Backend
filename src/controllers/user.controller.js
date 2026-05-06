@@ -3,6 +3,8 @@ const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const APIFeatures = require('../utils/APIFeatures');
 const logger = require('../utils/logger');
+const { rejectPrivilegePayload } = require('../utils/privilege-guard');
+const { changeUserRoleWithAudit } = require('../utils/privilege-guard');
 
 /**
  * Get all users
@@ -63,13 +65,34 @@ exports.getUserById = catchAsync(async (req, res, next) => {
  * Admin only
  */
 exports.updateUser = catchAsync(async (req, res, next) => {
+  await rejectPrivilegePayload({
+    req,
+    actorId: req.user._id,
+    actorRole: req.user.role,
+    targetId: req.params?.id || null,
+    reason: 'admin user update attempted privilege mutation',
+    payload: req.body,
+  });
+
   // Prevent password update through this route
   delete req.body.password;
   delete req.body.passwordChangedAt;
   delete req.body.passwordResetToken;
   delete req.body.passwordResetExpires;
 
-  const user = await User.findByIdAndUpdate(req.params.id, req.body, {
+  const filteredBody = {};
+  Object.keys(req.body || {}).forEach(key => {
+    // Map nested email/phone if provided
+    if (key === 'email') {
+      filteredBody['email.address'] = req.body[key];
+    } else if (key === 'phone') {
+      filteredBody['phone.number'] = req.body[key];
+    } else {
+      filteredBody[key] = req.body[key];
+    }
+  });
+
+  const user = await User.findByIdAndUpdate(req.params.id, filteredBody, {
     returnDocument: 'after',
     runValidators: true,
   });
@@ -221,7 +244,7 @@ exports.getUsersByRole = catchAsync(async (req, res, next) => {
   }
 
   // Don't use limitFields for users - we need all customer data
-  const features = new APIFeatures(User.find({ roles: role }).select('-password -passwordResetToken -passwordResetExpires'), req.query)
+  const features = new APIFeatures(User.find({ role }).select('-password -passwordResetToken -passwordResetExpires'), req.query)
     .search()
     .sort()
     .paginate();
@@ -261,7 +284,7 @@ exports.getUserStats = catchAsync(async (req, res, next) => {
 
   const customerStats = await User.aggregate([
     {
-      $match: { roles: 'customer' },
+      $match: { role: 'customer' },
     },
     {
       $group: {
@@ -277,7 +300,7 @@ exports.getUserStats = catchAsync(async (req, res, next) => {
 
   const deliveryStats = await User.aggregate([
     {
-      $match: { roles: 'delivery' },
+      $match: { role: 'delivery' },
     },
     {
       $group: {
@@ -309,8 +332,30 @@ exports.getUserStats = catchAsync(async (req, res, next) => {
  * Admin only
  */
 exports.createUser = catchAsync(async (req, res, next) => {
-  // Allow admin to create users with any role
-  const user = await User.create(req.body);
+  await rejectPrivilegePayload({
+    req,
+    actorId: req.user._id,
+    actorRole: req.user.role,
+    reason: 'admin create user attempted privilege-bearing payload',
+    payload: req.body,
+  });
+
+  // Allow admin to create users but only as least-privilege accounts.
+  const allowedFields = ['name', 'email', 'phone', 'password', 'addresses', 'customerData', 'deliveryData', 'preferences', 'avatar', 'dateOfBirth'];
+  const createBody = {};
+  Object.keys(req.body || {}).forEach(key => {
+    if (allowedFields.includes(key)) {
+      if (key === 'email') {
+        createBody['email.address'] = req.body[key];
+      } else if (key === 'phone') {
+        createBody['phone.number'] = req.body[key];
+      } else {
+        createBody[key] = req.body[key];
+      }
+    }
+  });
+
+  const user = await User.create(createBody);
 
   logger.info(`User created: ${user.email.address} (${user.role}) by ${req.user.email.address}`);
 
@@ -335,15 +380,19 @@ exports.updateUserRole = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid role', 400));
   }
 
-  const user = await User.findByIdAndUpdate(
-    req.params.id,
-    { role },
-    { returnDocument: 'after' }
-  );
+  const targetUser = await User.findById(req.params.id);
 
-  if (!user) {
+  if (!targetUser) {
     return next(new AppError('User not found', 404));
   }
+
+  const user = await changeUserRoleWithAudit({
+    req,
+    actor: req.user,
+    targetUser,
+    newRole: role,
+    reason: 'canonical admin role change endpoint',
+  });
 
   logger.info(
     `User role updated: ${user.email.address} to ${role} by ${req.user.email.address}`

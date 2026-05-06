@@ -122,7 +122,7 @@ exports.createOrderForCustomer = catchAsync(async (req, res, next) => {
       },
       email: {
         address: email,
-        isVerified: customerEmail ? false : true, // Auto-verify temp emails
+        isVerified: false,
       },
       password: randomPassword,
       role: 'customer',

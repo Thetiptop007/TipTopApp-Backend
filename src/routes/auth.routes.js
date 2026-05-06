@@ -80,6 +80,15 @@ router.post(
   authController.login
 );
 
+// Operational: revoke user sessions (admin-only)
+router.post(
+  '/admin/ops/revoke/user/:id',
+  authMiddleware.protect('admin'),
+  authMiddleware.restrictTo('admin'),
+  requireCsrf('admin'),
+  authController.revokeUserSessions
+);
+
 router.post(
   '/admin/refresh',
   refreshLimiter,
