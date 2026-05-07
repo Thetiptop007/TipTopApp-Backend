@@ -41,6 +41,50 @@ const getCustomerSourceType = (order) => {
   return order?.customer?.id ? 'LOGGED_IN' : 'GUEST';
 };
 
+const formatCustomerName = (customer) => {
+  if (!customer) {
+    return 'N/A';
+  }
+
+  if (typeof customer === 'string') {
+    return customer.trim() || 'N/A';
+  }
+
+  if (typeof customer.name === 'string') {
+    return customer.name.trim() || 'N/A';
+  }
+
+  if (customer.name && typeof customer.name === 'object') {
+    const firstName = customer.name.first || customer.name.firstName || '';
+    const lastName = customer.name.last || customer.name.lastName || '';
+    return `${firstName} ${lastName}`.trim() || 'N/A';
+  }
+
+  const firstName = customer.firstName || customer.first || '';
+  const lastName = customer.lastName || customer.last || '';
+  return `${firstName} ${lastName}`.trim() || 'N/A';
+};
+
+const formatCustomerPhone = (customer) => {
+  if (!customer) {
+    return 'N/A';
+  }
+
+  if (typeof customer === 'string') {
+    return 'N/A';
+  }
+
+  if (typeof customer.phone === 'string') {
+    return customer.phone.trim() || 'N/A';
+  }
+
+  if (customer.phone && typeof customer.phone === 'object') {
+    return customer.phone.number || customer.phone.phoneNumber || 'N/A';
+  }
+
+  return customer.mobile || customer.contactNumber || 'N/A';
+};
+
 /* =====================================================
    ADMIN RELATED ORDER CONTROLLERS
 ===================================================== */
@@ -1199,8 +1243,8 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
   const transformedOrders = orders.map(order => ({
     id: order._id.toString(),
     orderId: order.orderNumber,
-    customer: `${order.customer?.name || 'N/A'}`,
-    phone: order.customer?.phone || 'N/A',
+    customer: formatCustomerName(order.customer),
+    phone: formatCustomerPhone(order.customer),
     customerType: getCustomerSourceType(order),
     orderType: order.orderType || 'DELIVERY',
     items: [], // Will be populated on expand
@@ -1269,8 +1313,8 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
   const transformedOrder = {
     id: order._id.toString(),
     orderId: order.orderNumber,
-    customer: `${order.customer?.name || 'N/A'}`,
-    phone: order.customer?.phone || 'N/A',
+    customer: formatCustomerName(order.customer),
+    phone: formatCustomerPhone(order.customer),
     customerType: getCustomerSourceType(order),
     orderType: order.orderType || 'DELIVERY',
     items: order.items?.map(item => ({

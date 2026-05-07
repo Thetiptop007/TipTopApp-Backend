@@ -102,7 +102,7 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
 
   // 4) Load user from DB once per request. Session-level caching proved too stale
   // for blocked-user and session-deletion enforcement, so auth correctness wins here.
-  const user = await User.findById(userId).select('_id role roles isBlocked sessionVersion passwordChangedAt authSessions +isActive');
+  const user = await User.findById(userId).select('+isActive +sessionVersion +passwordChangedAt +authSessions');
 
   if (!user) {
     logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
