@@ -100,8 +100,10 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
     return next(new AppError('Invalid authentication scope.', 403));
   }
 
-  // 4) Load user
-  const user = await User.findById(userId).select('+isActive');
+  // 4) Load user from DB once per request. Session-level caching proved too stale
+  // for blocked-user and session-deletion enforcement, so auth correctness wins here.
+  const user = await User.findById(userId).select('_id role roles isBlocked sessionVersion passwordChangedAt authSessions +isActive');
+
   if (!user) {
     logSecurityAudit(SECURITY_EVENTS.TOKEN_VALIDATION_FAILURE, {
       reason: 'user_not_found_for_token',

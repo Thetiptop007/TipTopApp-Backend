@@ -99,21 +99,17 @@ class RateLimitStore {
     let resetAt = now + windowMs;
     
     if (entry && entry.expiry > now) {
+      // Window still valid, increment
       count = entry.count + 1;
       resetAt = entry.resetAt;
+      entry.count = count; // Update in-place
     } else {
+      // New window, create fresh entry
       this.memory.counters.set(key, { count: 1, expiry: now + windowMs, resetAt });
     }
 
     const remaining = Math.max(0, limit - count);
     
-    if (count === 1) {
-      this.memory.counters.set(key, { count, expiry: now + windowMs, resetAt });
-    } else {
-      const entry = this.memory.counters.get(key);
-      entry.count = count;
-    }
-
     return {
       count,
       limit,

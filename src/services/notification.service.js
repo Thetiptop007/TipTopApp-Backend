@@ -1,4 +1,3 @@
-const admin = require('firebase-admin');
 const https = require('https');
 const logger = require('../utils/logger');
 const { LOG_EVENTS } = require('../constants/log-events');
@@ -6,12 +5,32 @@ const { LOG_EVENTS } = require('../constants/log-events');
 class NotificationService {
   constructor() {
     this.initialized = false;
+    this.admin = null;
     this.expoAccessToken = process.env.EXPO_ACCESS_TOKEN || null;
     this.initialize();
   }
 
+  // Lazy-load firebase-admin to avoid ESM/CommonJS interop issues
+  getAdmin() {
+    if (!this.admin) {
+      try {
+        this.admin = require('firebase-admin');
+      } catch (error) {
+        logger.system('FIREBASE_ADMIN_LOAD_FAILED', 'Failed to load firebase-admin module', { error: error.message }, { level: 'error', severity: 'high' });
+        return null;
+      }
+    }
+    return this.admin;
+  }
+
   initialize() {
     try {
+      const admin = this.getAdmin();
+      if (!admin) {
+        this.initialized = false;
+        return;
+      }
+
       // Check if Firebase is already initialized
       if (admin.apps.length > 0) {
         this.initialized = true;
@@ -170,6 +189,9 @@ class NotificationService {
 
       // Send via FCM if it's an FCM token
       if (tokenType === 'fcm' && this.initialized) {
+        const admin = this.getAdmin();
+        if (!admin) return false;
+        
         const message = {
           notification: { title, body },
           data,
@@ -251,6 +273,9 @@ class NotificationService {
 
       // Send via FCM if it's an FCM token
       if (tokenType === 'fcm' && this.initialized) {
+        const admin = this.getAdmin();
+        if (!admin) return false;
+        
         const message = {
           notification: { title, body },
           data,
@@ -306,6 +331,9 @@ class NotificationService {
 
       // Send via FCM if it's an FCM token
       if (tokenType === 'fcm' && this.initialized) {
+        const admin = this.getAdmin();
+        if (!admin) return false;
+        
         const message = {
           notification: { title, body },
           data,

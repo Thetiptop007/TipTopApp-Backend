@@ -2,12 +2,16 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const authController = require('../controllers/auth.controller');
 const authMiddleware = require('../middlewares/auth');
+const { preventMixedSessions, validateSingleSessionScope } = require('../middlewares/mixedSessions');
 const authValidator = require('../validators/auth.validator');
 const { requireCsrf } = require('../middlewares/csrf');
 const { authBruteForceLimiter } = require('../middlewares/security/ipRateLimit');
 const { refreshTokenRateLimit } = require('../middlewares/security/costBasedThrottle');
 
 const router = express.Router();
+
+// Apply mixed session prevention to ALL auth routes
+router.use(preventMixedSessions);
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -74,6 +78,7 @@ const mountDeviceTokenRoutes = (scope) => {
 ===================================================== */
 router.post(
   '/admin/login',
+  validateSingleSessionScope('admin'),
   loginLimiter,
   authBruteForceLimiter({ windowMs: 15 * 60 * 1000, maxAttempts: 8 }),
   authValidator.validate(authValidator.adminLoginSchema),
@@ -91,6 +96,7 @@ router.post(
 
 router.post(
   '/admin/refresh',
+  validateSingleSessionScope('admin'),
   refreshLimiter,
   refreshTokenRateLimit({ windowMs: 15 * 60000, maxRefreshes: 30 }),
   requireCsrf('admin'),
@@ -134,6 +140,7 @@ router.post(
 
 router.post(
   '/customer/login',
+  validateSingleSessionScope('customer'),
   loginLimiter,
   authBruteForceLimiter({ windowMs: 15 * 60 * 1000, maxAttempts: 8 }),
   authValidator.validate(authValidator.customerLoginSchema),
@@ -142,6 +149,7 @@ router.post(
 
 router.post(
   '/customer/refresh',
+  validateSingleSessionScope('customer'),
   refreshLimiter,
   refreshTokenRateLimit({ windowMs: 15 * 60000, maxRefreshes: 30 }),
   requireCsrf('customer'),

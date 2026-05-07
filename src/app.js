@@ -24,10 +24,10 @@ app.disable('x-powered-by');
 // Trust proxy (important for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);
 
-// Request context + structured request logs
+// Request context + structured request logs (FAST - must be early)
 app.use(requestContextMiddleware);
 
-// Security HTTP headers
+// Security HTTP headers (FAST)
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -53,7 +53,7 @@ app.use(
   })
 );
 
-// CORS configuration
+// CORS configuration (FAST)
 const corsOptions = {
   origin: function (origin, callback) {
     // In production, allow specific origins from CLIENT_URL
@@ -95,32 +95,23 @@ app.use(cors(corsOptions));
 // Handle preflight requests
 app.options('*', cors(corsOptions));
 
-// Mount layered security middleware stack
-// Replaces simple IP-based limiter with comprehensive abuse protection:
-// - IP-based rate limiting
-// - Distributed abuse detection
-// - Cost-based throttling for expensive endpoints
-// - User-based limits for authenticated users
-// - Admin-specific stricter limits
-app.use('/api', ...getSecurityMiddlewareStack());
-
-// Body parser
+// Body parser (FAST)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Cookie parser
+// Cookie parser (FAST)
 app.use(cookieParser());
 
-// Data sanitization against NoSQL injection
+// Data sanitization against NoSQL injection (FAST)
 app.use(mongoSanitize());
 
-// Data sanitization against XSS
+// Data sanitization against XSS (FAST)
 app.use(xss());
 
-// Compression
+// Compression (FAST)
 app.use(compression());
 
-// Serve static files (for APK downloads)
+// Serve static files (for APK downloads) - BEFORE heavy middleware
 app.use('/downloads', express.static(path.join(__dirname, '../public/downloads'), {
   maxAge: '1d', // Cache for 1 day
   setHeaders: (res, filePath) => {
@@ -131,7 +122,7 @@ app.use('/downloads', express.static(path.join(__dirname, '../public/downloads')
   }
 }));
 
-// Health check endpoint
+// Health check endpoint (FAST, NO MIDDLEWARE)
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'ok',
@@ -141,15 +132,16 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Prometheus metrics endpoint
+// Prometheus metrics endpoint (FAST, NO MIDDLEWARE)
 app.get('/metrics', metricsHandler);
 
-// Root route for platform probes (Render often checks "/")
+// Root route for platform probes (Render often checks "/") - FAST
 app.get('/', (req, res) => {
   // Minimal root response to avoid leaking metadata
   res.status(200).json({ status: 'ok' });
 });
-// Use suspicious request middleware early
+
+// Use suspicious request middleware early - BEFORE SECURITY STACK (detects obvious abuse patterns)
 app.use(suspiciousRequests);
 
 app.get('/api/v1', (req, res) => {
@@ -161,6 +153,10 @@ app.get('/api/v1', (req, res) => {
   // Minimal health reply for API root
   return res.status(200).json({ status: 'ok' });
 });
+
+// **HEAVY SECURITY MIDDLEWARE** - Applied only to /api routes (rate limiting, abuse detection)
+// This is the most expensive middleware, so it's applied only where needed
+app.use('/api', ...getSecurityMiddlewareStack());
 
 // API routes
 const authRoutes = require('./routes/auth.routes');

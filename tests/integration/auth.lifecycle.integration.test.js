@@ -174,6 +174,40 @@ describe('Auth lifecycle integration', () => {
     expect(replayDenied.status).toBeGreaterThanOrEqual(400);
   });
 
+  it('accepts the previous access token during grace window and rejects it after grace expires', async () => {
+    const agent = request.agent(app);
+
+    const login = await agent
+      .post('/api/v1/auth/customer/login')
+      .send({ email: 'customer@example.com', password: 'Strong@123' })
+      .expect(200);
+
+    const oldAccessToken = login.body.data.tokens.accessToken;
+    const oldCsrfToken = login.body.data.csrfToken;
+
+    const refresh = await agent
+      .post('/api/v1/auth/customer/refresh')
+      .set('X-CSRF-Token', oldCsrfToken)
+      .send({})
+      .expect(200);
+
+    expect(refresh.body?.data?.tokens?.accessToken).toBeTruthy();
+
+    await request(app)
+      .get('/api/v1/auth/customer/me')
+      .set('Authorization', `Bearer ${oldAccessToken}`)
+      .expect(200);
+
+    const customer = await User.findOne({ 'email.address': 'customer@example.com' });
+    customer.authSessions.customer.rotatedAt = new Date(Date.now() - 20 * 1000);
+    await customer.save({ validateBeforeSave: false });
+
+    await request(app)
+      .get('/api/v1/auth/customer/me')
+      .set('Authorization', `Bearer ${oldAccessToken}`)
+      .expect(401);
+  });
+
   it('rejects cross-role token misuse for admin routes', async () => {
     const customerLogin = await request(app)
       .post('/api/v1/auth/customer/login')

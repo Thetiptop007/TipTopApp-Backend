@@ -39,19 +39,17 @@ const requireCsrf = (scope) => (req, res, next) => {
   const headerToken = req.get('x-csrf-token');
 
   if (process.env.NODE_ENV !== 'production') {
-    logger.debug(
-      `[CSRF check] ${JSON.stringify({
-        scope,
-        method: req.method,
-        url: req.originalUrl,
-        cookieName: getCsrfCookieName(scope),
-        hasCookieToken: !!cookieToken,
-        hasHeaderToken: !!headerToken,
-        cookieKeys: Object.keys(req.cookies || {}),
-        userAgent: req.get('user-agent') || 'unknown',
-        ip: req.ip,
-      })}`
-    );
+    logger.security('CSRF_CHECK', 'CSRF token check completed', {
+      scope,
+      method: req.method,
+      url: req.originalUrl,
+      cookieName: getCsrfCookieName(scope),
+      hasCookieToken: !!cookieToken,
+      hasHeaderToken: !!headerToken,
+      cookieKeys: Object.keys(req.cookies || {}),
+      userAgent: req.get('user-agent') || 'unknown',
+      ip: req.ip,
+    });
   }
 
   if (!cookieToken || !headerToken || cookieToken !== headerToken) {
@@ -66,20 +64,18 @@ const requireCsrf = (scope) => (req, res, next) => {
     }, { level: 'warn', severity: 'high' });
 
     if (process.env.NODE_ENV !== 'production') {
-      logger.warn(
-        `[CSRF mismatch] ${JSON.stringify({
-          scope,
-          method: req.method,
-          url: req.originalUrl,
-          cookieName: getCsrfCookieName(scope),
-          cookiePresent: !!cookieToken,
-          headerPresent: !!headerToken,
-          cookieMatchHeader: !!cookieToken && !!headerToken ? cookieToken === headerToken : false,
-          cookieKeys: Object.keys(req.cookies || {}),
-          routeParams: req.params,
-          bodyKeys: Object.keys(req.body || {}),
-        })}`
-      );
+      logger.security('CSRF_MISMATCH', 'CSRF token mismatch', {
+        scope,
+        method: req.method,
+        url: req.originalUrl,
+        cookieName: getCsrfCookieName(scope),
+        cookiePresent: !!cookieToken,
+        headerPresent: !!headerToken,
+        cookieMatchHeader: !!cookieToken && !!headerToken ? cookieToken === headerToken : false,
+        cookieKeys: Object.keys(req.cookies || {}),
+        routeParams: req.params,
+        bodyKeys: Object.keys(req.body || {}),
+      }, { level: 'warn', severity: 'high' });
     }
 
     return next(new AppError('Invalid CSRF token.', 403));

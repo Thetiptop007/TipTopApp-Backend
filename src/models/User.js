@@ -207,8 +207,12 @@ const userSchema = new mongoose.Schema(
     authSessions: {
       admin: {
         sessionId: String,
+        previousSessionId: String,
+        rotatedAt: Date,
         accessTokenHash: String,
+        previousAccessTokenHash: String,
         refreshTokenHash: String,
+        previousRefreshTokenHash: String,
         tokenHash: String,
         issuedAt: Date,
         expiresAt: Date,
@@ -216,8 +220,12 @@ const userSchema = new mongoose.Schema(
       },
       customer: {
         sessionId: String,
+        previousSessionId: String,
+        rotatedAt: Date,
         accessTokenHash: String,
+        previousAccessTokenHash: String,
         refreshTokenHash: String,
+        previousRefreshTokenHash: String,
         tokenHash: String,
         issuedAt: Date,
         expiresAt: Date,
@@ -395,6 +403,42 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
+const SESSION_ROTATION_GRACE_MS = 15 * 1000;
+
+const getRotationState = (session, sessionId) => {
+  if (!session || !sessionId) {
+    return { current: false, previous: false };
+  }
+
+  if (session.sessionId === sessionId) {
+    return { current: true, previous: false };
+  }
+
+  const previousAllowed =
+    session.previousSessionId === sessionId &&
+    session.rotatedAt &&
+    Date.now() - new Date(session.rotatedAt).getTime() <= SESSION_ROTATION_GRACE_MS;
+
+  if (previousAllowed) {
+    return { current: false, previous: true };
+  }
+
+  return { current: false, previous: false };
+};
+
+const invalidateAuthSessionCache = (userId, scope) => {
+  if (!userId || !scope) {
+    return;
+  }
+
+  try {
+    const sessionCache = require('../services/sessionCache');
+    sessionCache.delete(`${userId.toString()}-${scope}`);
+  } catch (error) {
+    // Cache invalidation is best-effort only.
+  }
+};
+
 // Generate JWT token
 const parseJwtExpirySeconds = (rawValue) => {
   const raw = String(rawValue || '7d').trim();
@@ -454,7 +498,7 @@ const parseDurationToMs = (value, fallbackMs) => {
   return amount * unitMs[unit];
 };
 
-userSchema.methods.storeAuthSession = async function (scope, { accessToken, refreshToken, sessionId } = {}) {
+userSchema.methods.storeAuthSession = async function (scope, { accessToken, refreshToken, sessionId, previousSession = null } = {}) {
   if (!scope || !['admin', 'customer'].includes(scope)) {
     throw new Error('Invalid session scope');
   }
@@ -472,8 +516,12 @@ userSchema.methods.storeAuthSession = async function (scope, { accessToken, refr
   this.authSessions = this.authSessions || {};
   this.authSessions[scope] = {
     sessionId: nextSessionId,
+    previousSessionId: previousSession?.sessionId || null,
+    rotatedAt: previousSession?.sessionId ? new Date() : null,
     accessTokenHash,
+    previousAccessTokenHash: previousSession?.accessTokenHash || null,
     refreshTokenHash,
+    previousRefreshTokenHash: previousSession?.refreshTokenHash || null,
     tokenHash: refreshTokenHash,
     issuedAt: new Date(),
     expiresAt,
@@ -499,6 +547,7 @@ userSchema.methods.revokeRefreshSession = async function (scope) {
   if (this.authSessions && this.authSessions[scope]) {
     delete this.authSessions[scope];
     await this.save({ validateBeforeSave: false });
+    invalidateAuthSessionCache(this._id, scope);
   }
 };
 
@@ -512,7 +561,8 @@ userSchema.methods.verifyAccessSession = async function (scope, { accessToken, s
     return { valid: false, reason: 'missing_token_or_session_id' };
   }
 
-  if (session.sessionId !== sessionId) {
+  const rotationState = getRotationState(session, sessionId);
+  if (!rotationState.current && !rotationState.previous) {
     return { valid: false, reason: 'session_id_mismatch' };
   }
 
@@ -520,13 +570,18 @@ userSchema.methods.verifyAccessSession = async function (scope, { accessToken, s
     return { valid: false, reason: 'session_expired' };
   }
 
-  const matches = await bcrypt.compare(accessToken, session.accessTokenHash);
-  if (!matches) {
-    return { valid: false, reason: 'access_token_mismatch' };
+  if (rotationState.current) {
+    const matches = await bcrypt.compare(accessToken, session.accessTokenHash);
+    if (!matches) {
+      return { valid: false, reason: 'access_token_mismatch' };
+    }
+  } else if (rotationState.previous) {
+    // Grace window: allow old token with previous sessionId
+    const matches = await bcrypt.compare(accessToken, session.previousAccessTokenHash);
+    if (!matches) {
+      return { valid: false, reason: 'access_token_mismatch' };
+    }
   }
-
-  this.authSessions[scope].lastUsedAt = new Date();
-  await this.save({ validateBeforeSave: false });
 
   return { valid: true, session: this.authSessions[scope] };
 };
@@ -541,7 +596,8 @@ userSchema.methods.verifyRefreshSession = async function (scope, refreshToken, s
     return { valid: false, reason: 'missing_refresh_token' };
   }
 
-  if (sessionId && session.sessionId !== sessionId) {
+  const rotationState = getRotationState(session, sessionId);
+  if (!rotationState.current && !rotationState.previous) {
     return { valid: false, reason: 'session_id_mismatch' };
   }
 
@@ -549,13 +605,17 @@ userSchema.methods.verifyRefreshSession = async function (scope, refreshToken, s
     return { valid: false, reason: 'session_expired' };
   }
 
-  const isValid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
-  if (!isValid) {
+  // Never accept old refresh token, even during grace window. Only current refresh token is valid.
+  // (Old access token can be accepted during grace window for client error recovery)
+  if (rotationState.current) {
+    const isValid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
+    if (!isValid) {
+      return { valid: false, reason: 'refresh_token_mismatch' };
+    }
+  } else {
+    // rotationState.previous is true but we never accept old refresh token
     return { valid: false, reason: 'refresh_token_mismatch' };
   }
-
-  this.authSessions[scope].lastUsedAt = new Date();
-  await this.save({ validateBeforeSave: false });
 
   return { valid: true, session: this.authSessions[scope] };
 };
@@ -590,6 +650,8 @@ userSchema.methods.normalizeRoleFromLegacy = async function () {
 userSchema.methods.clearAllRefreshSessions = async function () {
   this.authSessions = {};
   await this.save({ validateBeforeSave: false });
+  invalidateAuthSessionCache(this._id, 'admin');
+  invalidateAuthSessionCache(this._id, 'customer');
 };
 
 userSchema.methods.incrementSessionVersion = async function () {
@@ -597,6 +659,8 @@ userSchema.methods.incrementSessionVersion = async function () {
   // clear stored session blobs so existing sessions are invalidated
   this.authSessions = {};
   await this.save({ validateBeforeSave: false });
+  invalidateAuthSessionCache(this._id, 'admin');
+  invalidateAuthSessionCache(this._id, 'customer');
   return this.sessionVersion;
 };
 

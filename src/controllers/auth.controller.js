@@ -6,7 +6,6 @@ const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
 const { rejectPrivilegePayload } = require('../utils/privilege-guard');
-const notificationService = require('../services/notification.service');
 const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/securityAudit.logger');
 const { logAuthEvent } = require('../services/logging/auth.logger');
 const {
@@ -16,8 +15,10 @@ const {
   incrementRoleMismatch,
   incrementTokenMismatch,
 } = require('../services/metrics.service');
+const sessionCache = require('../services/sessionCache');
 
 const AUTH_VERSION = 'v2';
+const SESSION_CACHE_KEY = (userId, scope) => `${userId}-${scope}`;
 const getTokenType = (decoded = {}) => decoded.type || decoded.tokenType || null;
 const getTokenSubject = (decoded = {}) => decoded.sub || decoded.id || null;
 const getTokenSessionId = (decoded = {}) => decoded.sid || decoded.sessionId || null;
@@ -162,7 +163,27 @@ const serializeAuthUser = (user) => {
   };
 };
 
-const buildAuthResponse = ({ user, message, statusCode, scope, accessToken, res, expiresAt = null, authenticated = true }) => {
+const serializeMinimalAuthUser = (user) => {
+  if (!user) {
+    return null;
+  }
+
+  const fullName = typeof user.name === 'string'
+    ? user.name
+    : `${user.name?.first || ''} ${user.name?.last || ''}`.trim();
+
+  return {
+    id: user._id,
+    _id: user._id,
+    name: fullName,
+    role: user.role,
+    email: user.email?.address || null,
+    phone: user.phone?.number || null,
+    isActive: user.isActive !== false,
+  };
+};
+
+const buildAuthResponse = ({ user, message, statusCode, scope, accessToken, sessionId = null, res, expiresAt = null, authenticated = true }) => {
   const csrfToken = setCsrfCookie(res, scope);
   const safeUser = serializeAuthUser(user);
 
@@ -177,6 +198,7 @@ const buildAuthResponse = ({ user, message, statusCode, scope, accessToken, res,
       authVersion: AUTH_VERSION,
       tokens: {
         accessToken,
+        sessionId,
         expiresIn: process.env.JWT_EXPIRES_IN || '7d',
       },
       csrfToken,
@@ -184,11 +206,57 @@ const buildAuthResponse = ({ user, message, statusCode, scope, accessToken, res,
   });
 };
 
+const updateSessionCache = (user, scope) => {
+  if (!user?._id || !scope) {
+    return;
+  }
+
+  sessionCache.set(SESSION_CACHE_KEY(user._id.toString(), scope), {
+    user: serializeMinimalAuthUser(user),
+    role: user.role,
+    expiresAt: user.authSessions?.[scope]?.expiresAt || null,
+    authVersion: AUTH_VERSION,
+  });
+};
+
+const clearSessionCache = (userId, scope) => {
+  if (!userId || !scope) {
+    return;
+  }
+
+  sessionCache.delete(SESSION_CACHE_KEY(userId.toString(), scope));
+};
+
+/**
+ * Enforce session exclusivity: Clear all cookies for the other role
+ * when logging in with a specific role
+ */
+const clearOtherRoleCookies = (res, currentScope) => {
+  const otherScope = currentScope === 'admin' ? 'customer' : 'admin';
+  
+  // Clear refresh token for other scope
+  clearRefreshCookie(res, otherScope);
+  
+  // Clear CSRF token for other scope
+  clearCsrfCookie(res, otherScope);
+  
+  if (process.env.DEV === 'true' || process.env.NODE_ENV === 'development') {
+    logger.debug('CLEARED_OTHER_ROLE_COOKIES', `Cleared ${otherScope} cookies on login as ${currentScope}`, {
+      clearedScope: otherScope,
+      currentScope,
+    });
+  }
+};
+
 /**
  * Generate JWT tokens and send response
  */
 const createSendToken = async (user, statusCode, res, message = 'Success') => {
   const scope = user.role === 'admin' ? 'admin' : 'customer';
+  
+  // CRITICAL: Clear all cookies for the other role to enforce session exclusivity
+  clearOtherRoleCookies(res, scope);
+  
   const sessionId = crypto.randomUUID();
   user.authSessions = user.authSessions || {};
   user.authSessions[scope] = {
@@ -206,6 +274,7 @@ const createSendToken = async (user, statusCode, res, message = 'Success') => {
   // Update last login
   await user.updateLastLogin();
   setRefreshCookie(res, scope, refreshToken);
+  updateSessionCache(user, scope);
 
   logAuthEvent('AUTH_LOGIN_SESSION_ISSUED', {
     userId: user._id.toString(),
@@ -222,6 +291,7 @@ const createSendToken = async (user, statusCode, res, message = 'Success') => {
     scope,
     accessToken,
     expiresAt: user.authSessions?.[scope]?.expiresAt || null,
+    sessionId,
     res,
   });
 };
@@ -539,6 +609,7 @@ exports.logout = catchAsync(async (req, res, next) => {
 
   clearRefreshCookie(res, scope);
   clearCsrfCookie(res, scope);
+  clearSessionCache(req.user?._id, scope);
 
   logger.auth('AUTH_LOGOUT', 'User logged out', {
     userId: req.user?._id?.toString(),
@@ -576,6 +647,29 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
 
   if (!refreshToken) {
     return next(new AppError('Please provide a refresh token.', 400));
+  }
+
+  // CRITICAL: Validate single session scope - prevent mixed sessions
+  const otherScopeCookieName = scope === 'admin' ? 'customerRefreshToken' : 'adminRefreshToken';
+  if (req.cookies?.[otherScopeCookieName]) {
+    logSecurityAudit(SECURITY_EVENTS.MIXED_SESSIONS_DETECTED, {
+      scope,
+      otherScope: scope === 'admin' ? 'customer' : 'admin',
+      ip: req.ip,
+      path: req.originalUrl,
+    }, { level: 'error', severity: 'critical' });
+
+    // Clear both sessions
+    clearRefreshCookie(res, scope);
+    clearRefreshCookie(res, scope === 'admin' ? 'customer' : 'admin');
+    clearCsrfCookie(res, scope);
+    clearCsrfCookie(res, scope === 'admin' ? 'customer' : 'admin');
+
+    return res.status(403).json({
+      status: 'error',
+      code: 'MIXED_SESSIONS',
+      message: 'Mixed sessions detected. Please log in again.',
+    });
   }
 
   // Verify refresh token
@@ -635,10 +729,11 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
   }
 
   // Check if user still exists
-  const user = await User.findById(decodedUserId).select('+isActive');
+  const user = await User.findById(decodedUserId).select('_id role roles isBlocked sessionVersion passwordChangedAt authSessions name email phone +isActive');
   if (!user) {
     clearRefreshCookie(res, scope);
     clearCsrfCookie(res, scope);
+    clearSessionCache(decodedUserId, scope);
     logAuthEvent('AUTH_REFRESH_DENIED', {
       reason: 'user_not_found',
       scope,
@@ -660,6 +755,7 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     await user.revokeRefreshSession(scope);
     clearRefreshCookie(res, scope);
     clearCsrfCookie(res, scope);
+    clearSessionCache(user._id, scope);
     logAuthEvent('AUTH_REFRESH_DENIED', {
       reason: 'inactive_user',
       userId: user._id.toString(),
@@ -672,6 +768,7 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     await user.revokeRefreshSession(scope);
     clearRefreshCookie(res, scope);
     clearCsrfCookie(res, scope);
+    clearSessionCache(user._id, scope);
     logAuthEvent('AUTH_REFRESH_DENIED', {
       reason: 'blocked_user',
       userId: user._id.toString(),
@@ -684,6 +781,7 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     await user.revokeRefreshSession(scope);
     clearRefreshCookie(res, scope);
     clearCsrfCookie(res, scope);
+    clearSessionCache(user._id, scope);
     logAuthEvent('AUTH_REFRESH_DENIED', {
       reason: 'role_mismatch',
       userId: user._id.toString(),
@@ -697,6 +795,7 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     await user.revokeRefreshSession(scope);
     clearRefreshCookie(res, scope);
     clearCsrfCookie(res, scope);
+    clearSessionCache(user._id, scope);
     logAuthEvent('AUTH_REFRESH_DENIED', {
       reason: 'role_mismatch',
       userId: user._id.toString(),
@@ -711,6 +810,7 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     await user.revokeRefreshSession(scope);
     clearRefreshCookie(res, scope);
     clearCsrfCookie(res, scope);
+    clearSessionCache(user._id, scope);
     logAuthEvent('AUTH_REFRESH_DENIED', {
       reason: sessionCheck.reason || 'refresh_session_validation_failed',
       userId: user._id.toString(),
@@ -727,6 +827,15 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
   }
 
   // Generate new access token
+  // Capture previous session BEFORE mutating current one
+  const previousSession = user.authSessions?.[scope]
+    ? {
+        sessionId: user.authSessions[scope].sessionId,
+        accessTokenHash: user.authSessions[scope].accessTokenHash,
+        refreshTokenHash: user.authSessions[scope].refreshTokenHash,
+      }
+    : null;
+
   const nextSessionId = crypto.randomUUID();
   user.authSessions = user.authSessions || {};
   user.authSessions[scope] = {
@@ -744,9 +853,11 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     accessToken: newAccessToken,
     refreshToken: newRefreshToken,
     sessionId: nextSessionId,
+    previousSession,
   });
   setRefreshCookie(res, scope, newRefreshToken);
   const csrfToken = setCsrfCookie(res, scope);
+  updateSessionCache(user, scope);
 
   logger.auth('AUTH_TOKEN_REFRESH', 'Access token refreshed', {
     userId: user._id.toString(),
@@ -777,6 +888,7 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
       authVersion: AUTH_VERSION,
       tokens: {
         accessToken: newAccessToken,
+        sessionId: nextSessionId,
         expiresIn: process.env.JWT_EXPIRES_IN || '7d',
       },
       csrfToken,
@@ -906,6 +1018,7 @@ exports.changePassword = catchAsync(async (req, res, next) => {
   user.password = newPassword;
   user.passwordChangedAt = Date.now();
   await user.save();
+  clearSessionCache(user._id, getAuthScope(req, user));
 
   logger.auth('AUTH_PASSWORD_CHANGED', 'Password changed successfully', { userId: user._id });
 
@@ -987,19 +1100,43 @@ exports.sendVerificationEmail = catchAsync(async (req, res, next) => {
 /**
  * Get current user profile
  * GET /api/v1/auth/me
+ * 
+ * OPTIMIZATION: Use req.user already populated by auth middleware instead of re-querying DB
+ * This avoids an unnecessary DB round trip
  */
 exports.getMe = catchAsync(async (req, res, next) => {
-  const user = await User.findById(req.user._id);
-
+  // User already validated and loaded by protect middleware
+  // For subsequent /me calls within cache TTL, req.user may be from sessionCache
+  const user = req.user;
+  
   if (!user) {
     return next(new AppError('User not found.', 404));
+  }
+
+  const scope = req.auth?.scope || (user.role === 'admin' ? 'admin' : 'customer');
+  const cacheKey = SESSION_CACHE_KEY(user._id.toString(), scope);
+  const cachedMe = sessionCache.get(cacheKey);
+
+  if (cachedMe?.user) {
+    return res.status(200).json({
+      status: 'success',
+      message: 'Current user loaded successfully.',
+      data: {
+        user: cachedMe.user,
+        role: cachedMe.role || user.role,
+        authenticated: true,
+        csrfToken: null,
+        expiresAt: cachedMe.expiresAt || req.auth?.expiresAt || user.authSessions?.[scope]?.expiresAt || null,
+        authVersion: cachedMe.authVersion || AUTH_VERSION,
+      },
+    });
   }
 
   res.status(200).json({
     status: 'success',
     message: 'Current user loaded successfully.',
     data: {
-      user: serializeAuthUser(user),
+      user: serializeMinimalAuthUser(user),
       role: user.role,
       authenticated: true,
       csrfToken: null,

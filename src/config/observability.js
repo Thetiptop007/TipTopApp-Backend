@@ -21,7 +21,8 @@ module.exports = {
   serviceName: process.env.SERVICE_NAME || 'tiptop-backend',
   serviceVersion: process.env.SERVICE_VERSION || pkg.version || '0.0.0',
   hostname: os.hostname(),
-  logLevel: process.env.LOG_LEVEL || (isDevelopment ? 'debug' : 'info'),
+  // Production: warn/error only. Staging: info. Dev: debug. Can override with LOG_LEVEL env var.
+  logLevel: process.env.LOG_LEVEL || (isDevelopment ? 'debug' : isStaging ? 'info' : 'warn'),
   logPrettyEnabled,
   enableSampling: isProduction,
   sampleRate,
