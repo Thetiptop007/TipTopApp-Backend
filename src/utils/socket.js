@@ -30,9 +30,10 @@ const initializeSocket = (server) => {
 
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const userId = decoded.sub || decoded.id; // Use sub (standard) or id (legacy)
       
       // Get user
-      const user = await User.findById(decoded.id).select('-password');
+      const user = await User.findById(userId).select('-password');
       
       if (!user) {
         return next(new Error('Authentication error: User not found'));
@@ -249,7 +250,10 @@ const emitAdminStats = (stats) => {
  * Emit new order notification to admins
  */
 const emitNewOrder = (order) => {
-  if (!io) return;
+  if (!io) {
+    logger.warn('SOCKET_NOT_INITIALIZED', 'Cannot emit new order: Socket.IO not initialized');
+    return;
+  }
   
   // Notify all admins about new order
   io.to('role:admin').emit('order:new', {

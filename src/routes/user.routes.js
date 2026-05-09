@@ -11,15 +11,7 @@ const router = express.Router();
 router.use(authMiddleware.protect('admin'));
 router.use(authMiddleware.restrictTo('admin'));
 
-// Add logging middleware for all user routes
-router.use((req, res, next) => {
-  logger.debug('[User Routes] Request received:', {
-    method: req.method,
-    path: req.path,
-    query: req.query
-  });
-  next();
-});
+
 
 // Get user statistics
 router.get('/stats/overview', userController.getUserStats);

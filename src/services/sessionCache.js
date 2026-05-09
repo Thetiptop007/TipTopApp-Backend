@@ -113,10 +113,7 @@ class SessionCache {
       }
     }
 
-    if (cleaned > 0 && process.env.NODE_ENV === 'development') {
-      // Silently clean in production, log in dev for monitoring
-      console.log(`[SessionCache] Cleaned up ${cleaned} expired entries`);
-    }
+
   }
 
   /**

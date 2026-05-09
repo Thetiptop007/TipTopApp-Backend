@@ -6,6 +6,7 @@ const { connectDB } = require('./src/config/database');
 const cache = require('./src/utils/cache');
 const { initializeSecurityLayers, shutdownSecurity } = require('./src/services/security.service');
 const { LOG_EVENTS, LOG_SEVERITY } = require('./src/constants/log-events');
+const { initializeSocket } = require('./src/utils/socket');
 
 const app = require('./src/app');
 
@@ -103,6 +104,9 @@ const startServer = async () => {
       port: Number(PORT),
     });
   });
+
+  // Initialize Socket.IO
+  initializeSocket(server);
 
   // Log if server closes unexpectedly
   server.on('close', () => {

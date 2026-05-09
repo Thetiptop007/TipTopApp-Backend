@@ -12,7 +12,7 @@ const { changeUserRoleWithAudit } = require('../utils/privilege-guard');
  * Admin only
  */
 exports.getAllUsers = catchAsync(async (req, res, next) => {
-  logger.debug('[getAllUsers - USER CONTROLLER] Called with query:', req.query);
+
   
   // Don't use limitFields for users - we need all user data except sensitive fields
   // Filter to only return active users
@@ -24,10 +24,7 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
 
   const result = await features.execute(User);
 
-  logger.debug('[getAllUsers - USER CONTROLLER] Result:', {
-    dataLength: result.data.length,
-    pagination: result.pagination
-  });
+
 
   res.status(200).json({
     status: 'success',

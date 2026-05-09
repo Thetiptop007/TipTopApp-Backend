@@ -240,12 +240,7 @@ const clearOtherRoleCookies = (res, currentScope) => {
   // Clear CSRF token for other scope
   clearCsrfCookie(res, otherScope);
   
-  if (process.env.DEV === 'true' || process.env.NODE_ENV === 'development') {
-    logger.debug('CLEARED_OTHER_ROLE_COOKIES', `Cleared ${otherScope} cookies on login as ${currentScope}`, {
-      clearedScope: otherScope,
-      currentScope,
-    });
-  }
+
 };
 
 /**

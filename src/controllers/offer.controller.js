@@ -374,7 +374,9 @@ exports.getTeaserOffers = catchAsync(async (req, res, next) => {
  * Body: { items: [itemId1, itemId2], totalAmount: 500 }
  */
 exports.checkApplicableOffers = catchAsync(async (req, res, next) => {
-  const { items, totalAmount } = req.body;
+  // Flexible extraction for compatibility
+  const totalAmount = req.body.totalAmount || req.body.subtotal;
+  let items = req.body.items;
 
   if (!items || !Array.isArray(items)) {
     return next(new AppError('Items array is required', 400));
@@ -383,6 +385,11 @@ exports.checkApplicableOffers = catchAsync(async (req, res, next) => {
   if (typeof totalAmount !== 'number') {
     return next(new AppError('Total amount is required', 400));
   }
+
+  // If items are objects with itemId, extract just the IDs for checking
+  const itemIds = items.map(item => 
+    typeof item === 'object' && item.itemId ? item.itemId : item
+  );
 
   // Get all active offers
   const activeOffers = await Offer.getActiveOffers();
@@ -400,7 +407,7 @@ exports.checkApplicableOffers = catchAsync(async (req, res, next) => {
     }
 
     if (offer.applicableTo === 'items') {
-      return items.some(itemId =>
+      return itemIds.some(itemId =>
         offer.applicableItems.some(applicableItem =>
           applicableItem._id.toString() === itemId.toString()
         )
@@ -414,7 +421,7 @@ exports.checkApplicableOffers = catchAsync(async (req, res, next) => {
 
   // Calculate discount for each applicable offer
   const offersWithDiscount = applicableOffers.map(offer => {
-    const orderItems = items.map(itemId => ({ menuItem: itemId }));
+    const orderItems = itemIds.map(itemId => ({ menuItem: itemId }));
     const discount = offer.calculateDiscount(totalAmount, orderItems);
     
     return {
