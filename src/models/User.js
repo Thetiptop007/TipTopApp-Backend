@@ -508,8 +508,8 @@ userSchema.methods.storeAuthSession = async function (scope, { accessToken, refr
   }
 
   const nextSessionId = sessionId || crypto.randomUUID();
-  const accessTokenHash = bcrypt.hashSync(accessToken, 12);
-  const refreshTokenHash = bcrypt.hashSync(refreshToken, 12);
+  const accessTokenHash = crypto.createHash('sha256').update(accessToken).digest('hex');
+  const refreshTokenHash = await bcrypt.hash(refreshToken, 12); // Keep Bcrypt for long-lived refresh tokens
   const expiresIn = String(process.env.JWT_REFRESH_EXPIRE || '7d').trim();
   const expiresAt = new Date(Date.now() + parseDurationToMs(expiresIn, 7 * 24 * 60 * 60 * 1000));
 
@@ -570,16 +570,28 @@ userSchema.methods.verifyAccessSession = async function (scope, { accessToken, s
     return { valid: false, reason: 'session_expired' };
   }
 
+  // Check match based on hashing algorithm (handle legacy bcrypt transition)
+  const checkTokenMatch = async (token, storedHash) => {
+    if (!storedHash) return false;
+    // SHA-256 hex is 64 chars
+    if (storedHash.length === 64 && !storedHash.startsWith('$2')) {
+      const hash = crypto.createHash('sha256').update(token).digest('hex');
+      return hash === storedHash;
+    }
+    // Fallback to legacy Bcrypt
+    return await bcrypt.compare(token, storedHash);
+  };
+
   if (rotationState.current) {
-    const matches = await bcrypt.compare(accessToken, session.accessTokenHash);
+    const matches = await checkTokenMatch(accessToken, session.accessTokenHash);
     if (!matches) {
       return { valid: false, reason: 'access_token_mismatch' };
     }
   } else if (rotationState.previous) {
     // Grace window: allow old token with previous sessionId
-    const matches = await bcrypt.compare(accessToken, session.previousAccessTokenHash);
+    const matches = await checkTokenMatch(accessToken, session.previousAccessTokenHash);
     if (!matches) {
-      return { valid: false, reason: 'access_token_mismatch' };
+      return { valid: false, reason: 'access_token_mismatch_prev' };
     }
   }
 

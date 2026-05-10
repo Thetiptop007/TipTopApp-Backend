@@ -6,6 +6,7 @@ const catchAsync = require('../utils/catchAsync');
 const logger = require('../utils/logger');
 const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/securityAudit.logger');
 const { incrementRoleMismatch, incrementTokenMismatch } = require('../services/metrics.service');
+const sessionCache = require('../services/sessionCache');
 
 const getTokenType = (decoded = {}) => decoded.type || decoded.tokenType || null;
 const getTokenSubject = (decoded = {}) => decoded.sub || decoded.id || null;
@@ -100,8 +101,17 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
     return next(new AppError('Invalid authentication scope.', 403));
   }
 
-  // 4) Load user from DB once per request. Session-level caching proved too stale
-  // for blocked-user and session-deletion enforcement, so auth correctness wins here.
+  // 4) Check in-memory session cache first (Sliding Trust Window)
+  const cacheKey = `${userId}-${tokenScope}`;
+  const cachedAuth = sessionCache.get(cacheKey);
+
+  if (cachedAuth && cachedAuth.sessionId === tokenSessionId) {
+    req.user = cachedAuth.user;
+    req.auth = cachedAuth.auth;
+    return next();
+  }
+
+  // 5) Load user from DB once per request if cache missed.
   const user = await User.findById(userId).select('+isActive +sessionVersion +passwordChangedAt +authSessions');
 
   if (!user) {
@@ -218,7 +228,14 @@ exports.protect = (requiredScope = null) => catchAsync(async (req, res, next) =>
     authVersion: 'v2',
   };
 
-  // 9) allow request
+  // 9) Store in cache for subsequent parallel requests (15s window)
+  sessionCache.set(cacheKey, {
+    user,
+    auth: req.auth,
+    sessionId: tokenSessionId,
+  });
+
+  // 10) allow request
   next();
 });
 

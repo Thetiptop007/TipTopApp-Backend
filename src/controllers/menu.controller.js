@@ -21,7 +21,7 @@ const { isProduction } = require('../config/observability');
 
 exports.getMenuItems = catchAsync(async (req, res, next) => {
   // Use APIFeatures for advanced search with relevance sorting
-  const features = new APIFeatures(MenuItem.find(), req.query)
+  const features = new APIFeatures(MenuItem.find().lean(), req.query)
     .filter()
     .search()
     .sort()
