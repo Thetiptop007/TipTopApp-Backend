@@ -38,18 +38,6 @@ const parseRobustCookies = (cookieHeader) => {
  * - Logs all mixed session violations for security auditing
  */
 exports.preventMixedSessions = catchAsync(async (req, res, next) => {
-  // --- AUTH TRACE LOGGING FOR PRODUCTION DEBUGGING ---
-  if (process.env.NODE_ENV === 'production') {
-    const cookieHeader = req.headers.cookie;
-    console.log(`[AUTH_TRACE] Request: ${req.method} ${req.path}`);
-    console.log(`[AUTH_TRACE] Cookie Header: ${cookieHeader ? 'PRESENT' : 'MISSING'}`);
-    if (cookieHeader) {
-      const names = cookieHeader.split(';').map(c => c.split('=')[0].trim());
-      console.log(`[AUTH_TRACE] Cookie Names: ${names.join(', ')}`);
-    }
-  }
-  // ----------------------------------------------------
-
   // Re-parse cookies robustly to handle duplicates sent by production browsers
   if (req.headers.cookie) {
     const robustCookies = parseRobustCookies(req.headers.cookie);
@@ -71,20 +59,11 @@ exports.preventMixedSessions = catchAsync(async (req, res, next) => {
     // Determine the intended scope to decide which token to keep
     const tokenScopeHeader = req.get('x-token-scope');
     const path = req.path.toLowerCase();
-    
-    if (process.env.NODE_ENV === 'production') {
-      console.log(`[AUTH_TRACE] Mixed Session - Header Scope: ${tokenScopeHeader}, Path: ${path}`);
-    }
-
     const isExplicitAdminRoute = path.includes('/admin/');
     const isExplicitCustomerRoute = path.includes('/customer/');
     
     const intendedScope = tokenScopeHeader === 'admin' || isExplicitAdminRoute ? 'admin' : 
                          (tokenScopeHeader === 'customer' || isExplicitCustomerRoute ? 'customer' : null);
-
-    if (process.env.NODE_ENV === 'production') {
-      console.log(`[AUTH_TRACE] Mixed Session - Intended: ${intendedScope}`);
-    }
 
     if (intendedScope) {
       // Smarter correction: only clear the token that doesn't match the intended scope

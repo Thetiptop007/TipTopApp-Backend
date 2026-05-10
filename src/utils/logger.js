@@ -159,7 +159,9 @@ function humanizeEvent(event) {
 
 function consoleFallback(level, payload, message) {
   try {
-    if (isDevelopment) {
+    const isProd = process.env.NODE_ENV === 'production';
+    
+    if (!isProd) {
       const method = console[level] || console.warn;
       method.call(console, message || payload?.message || 'Logger recovery', payload);
       return;

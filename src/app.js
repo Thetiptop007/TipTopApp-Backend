@@ -56,12 +56,11 @@ app.use(
 // CORS configuration (FAST)
 const corsOptions = {
   origin: function (origin, callback) {
-    const whitelist = [
-      'https://www.thetiptop.in',
-      'https://thetiptop.in',
-      'http://localhost:5173',
-      'http://localhost:3000'
-    ];
+    const envWhitelist = process.env.CLIENT_URL
+      ? process.env.CLIENT_URL.split(',').map(url => url.trim()).filter(url => url)
+      : [];
+    
+    const whitelist = [...envWhitelist];
     
     const isAllowedOrigin = !origin || 
       whitelist.includes(origin) || 

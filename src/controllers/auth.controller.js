@@ -52,30 +52,41 @@ const getRefreshCookieOptions = () => ({
   path: '/',
 });
 
-const parseRefreshTokenExpiryMs = () => {
+const parseRefreshTokenExpiryMs = (scope) => {
   const raw = process.env.JWT_REFRESH_EXPIRE || '7d';
   const match = String(raw).trim().match(/^(\d+)([smhd])$/i);
 
+  let expiry;
   if (!match) {
-    return 7 * 24 * 60 * 60 * 1000;
+    expiry = 7 * 24 * 60 * 60 * 1000;
+  } else {
+    const amount = Number(match[1]);
+    const unit = match[2].toLowerCase();
+    const unitMs = {
+      s: 1000,
+      m: 60 * 1000,
+      h: 60 * 60 * 1000,
+      d: 24 * 60 * 60 * 1000,
+    };
+    expiry = amount * unitMs[unit];
   }
 
-  const amount = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  const unitMs = {
-    s: 1000,
-    m: 60 * 1000,
-    h: 60 * 60 * 1000,
-    d: 24 * 60 * 60 * 1000,
-  };
-
-  return amount * unitMs[unit];
+  // ENFORCE ROLE-SPECIFIC LIMITS
+  if (scope === 'admin') {
+    // Admin: At least 24 hours
+    const minAdminExpiry = 24 * 60 * 60 * 1000;
+    return Math.max(expiry, minAdminExpiry);
+  } else {
+    // Customer: Max 2 months (60 days)
+    const maxCustomerExpiry = 60 * 24 * 60 * 60 * 1000;
+    return Math.min(expiry, maxCustomerExpiry);
+  }
 };
 
 const setRefreshCookie = (res, scope, token) => {
   res.cookie(getRefreshCookieName(scope), token, {
     ...getRefreshCookieOptions(),
-    maxAge: parseRefreshTokenExpiryMs(),
+    maxAge: parseRefreshTokenExpiryMs(scope),
   });
 };
 
@@ -630,12 +641,6 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
   const { getFirstNonEmpty } = require('../utils/cookieUtils');
   const refreshToken = getFirstNonEmpty(req.cookies?.[cookieName]) || req.body.refreshToken;
   
-  if (process.env.NODE_ENV === 'production') {
-    const rawCookie = req.get('cookie');
-    console.log(`[AUTH_TRACE] Refresh - Raw Header: ${rawCookie ? 'PRESENT' : 'MISSING'}, ParsedKeys: ${Object.keys(req.cookies || {}).join(', ')}`);
-    console.log(`[AUTH_TRACE] Refresh Attempt - Scope: ${scope}, CookieFound: ${!!req.cookies?.[cookieName]}, BodyFound: ${!!req.body.refreshToken}, FinalTokenFound: ${!!refreshToken}`);
-  }
-
   if (!refreshToken) {
     return next(new AppError('Please provide a refresh token.', 400));
   }

@@ -22,7 +22,7 @@ module.exports = {
   serviceVersion: process.env.SERVICE_VERSION || pkg.version || '0.0.0',
   hostname: os.hostname(),
   // Production: warn/error only. Staging: info. Dev: debug. Can override with LOG_LEVEL env var.
-  logLevel: process.env.LOG_LEVEL || (isDevelopment ? 'warn' : isStaging ? 'info' : 'warn'),
+  logLevel: process.env.LOG_LEVEL || (isDevelopment ? 'warn' : 'info'),
   logPrettyEnabled,
   enableSampling: isProduction,
   sampleRate,
