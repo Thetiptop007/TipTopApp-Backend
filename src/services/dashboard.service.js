@@ -75,15 +75,29 @@ const STATUS_MAP = {
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+const IST_OFFSET = 5.5 * 60 * 60 * 1000; // 5 hours 30 minutes
+
 const getDateBoundaries = (now = new Date()) => {
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
+  // Shift 'now' to IST to calculate boundaries
+  const istNow = new Date(now.getTime() + IST_OFFSET);
 
-  const startOfYesterday = new Date(startOfToday);
-  startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+  // Start of today in IST
+  const startOfTodayIST = new Date(istNow);
+  startOfTodayIST.setUTCHours(0, 0, 0, 0);
+  const startOfToday = new Date(startOfTodayIST.getTime() - IST_OFFSET);
 
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const startOfYear = new Date(now.getFullYear(), 0, 1);
+  // Start of yesterday in IST
+  const startOfYesterdayIST = new Date(startOfTodayIST);
+  startOfYesterdayIST.setUTCDate(startOfYesterdayIST.getUTCDate() - 1);
+  const startOfYesterday = new Date(startOfYesterdayIST.getTime() - IST_OFFSET);
+
+  // Start of month in IST
+  const startOfMonthIST = new Date(istNow.getUTCFullYear(), istNow.getUTCMonth(), 1);
+  const startOfMonth = new Date(startOfMonthIST.getTime() - IST_OFFSET);
+
+  // Start of year in IST
+  const startOfYearIST = new Date(istNow.getUTCFullYear(), 0, 1);
+  const startOfYear = new Date(startOfYearIST.getTime() - IST_OFFSET);
 
   return {
     now,

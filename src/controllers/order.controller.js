@@ -1025,11 +1025,19 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
 });
 
 exports.getTodayOrders = catchAsync(async (req, res, next) => {
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
+  const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+  const now = new Date();
+  const istNow = new Date(now.getTime() + IST_OFFSET);
   
-  const endOfDay = new Date();
-  endOfDay.setHours(23, 59, 59, 999);
+  // Start of today in IST
+  const startOfTodayIST = new Date(istNow);
+  startOfTodayIST.setUTCHours(0, 0, 0, 0);
+  const startOfDay = new Date(startOfTodayIST.getTime() - IST_OFFSET);
+  
+  // End of today in IST
+  const endOfTodayIST = new Date(startOfTodayIST);
+  endOfTodayIST.setUTCHours(23, 59, 59, 999);
+  const endOfDay = new Date(endOfTodayIST.getTime() - IST_OFFSET);
 
   // Define active and inactive statuses (UPPERCASE to match DB)
   const activeStatuses = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'];
