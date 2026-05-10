@@ -3,6 +3,15 @@ const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 
 /**
+ * Helper to get the first non-empty value from a cookie that might be an array
+ */
+const getFirstNonEmpty = (val) => {
+  if (typeof val === 'string') return val.trim().length > 0 ? val : null;
+  if (Array.isArray(val)) return val.find(v => typeof v === 'string' && v.trim().length > 0) || null;
+  return null;
+};
+
+/**
  * Middleware to prevent simultaneous admin and customer sessions
  *
  * Enforces strict session exclusivity:
@@ -11,8 +20,8 @@ const catchAsync = require('../utils/catchAsync');
  * - Logs all mixed session violations for security auditing
  */
 exports.preventMixedSessions = catchAsync(async (req, res, next) => {
-  const hasAdminRefresh = typeof req.cookies.adminRefreshToken === 'string' && req.cookies.adminRefreshToken.length > 0;
-  const hasCustomerRefresh = typeof req.cookies.customerRefreshToken === 'string' && req.cookies.customerRefreshToken.length > 0;
+  const hasAdminRefresh = !!getFirstNonEmpty(req.cookies.adminRefreshToken);
+  const hasCustomerRefresh = !!getFirstNonEmpty(req.cookies.customerRefreshToken);
 
   // If both tokens exist, this is a security violation
   if (hasAdminRefresh && hasCustomerRefresh) {
@@ -52,8 +61,8 @@ exports.preventMixedSessions = catchAsync(async (req, res, next) => {
  * Validate that only the expected role's tokens exist
  */
 exports.validateSingleSessionScope = (expectedScope) => catchAsync(async (req, res, next) => {
-  const hasAdminRefresh = typeof req.cookies.adminRefreshToken === 'string' && req.cookies.adminRefreshToken.length > 0;
-  const hasCustomerRefresh = typeof req.cookies.customerRefreshToken === 'string' && req.cookies.customerRefreshToken.length > 0;
+  const hasAdminRefresh = !!getFirstNonEmpty(req.cookies.adminRefreshToken);
+  const hasCustomerRefresh = !!getFirstNonEmpty(req.cookies.customerRefreshToken);
 
   // If trying to use admin scope but customer token exists
   if (expectedScope === 'admin' && hasCustomerRefresh) {

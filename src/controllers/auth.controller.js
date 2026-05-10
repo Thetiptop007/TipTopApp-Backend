@@ -221,12 +221,6 @@ const clearOtherRoleCookies = (res, currentScope) => {
   
   // Clear CSRF token for other scope
   clearCsrfCookie(res, otherScope);
-  
-  // Sweep legacy paths one last time just in case (to fix duplication issues on Render)
-  res.clearCookie('adminRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-  res.clearCookie('customerRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-  res.clearCookie('adminCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-  res.clearCookie('customerCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
 };
 
 /**
@@ -624,7 +618,14 @@ exports.logout = catchAsync(async (req, res, next) => {
 exports.refreshToken = catchAsync(async (req, res, next) => {
   const scope = getAuthScope(req);
   const cookieName = getRefreshCookieName(scope);
-  const refreshToken = req.cookies?.[cookieName] || req.body.refreshToken;
+  const getFirstNonEmpty = (val) => {
+    if (typeof val === 'string') return val.trim().length > 0 ? val : null;
+    if (Array.isArray(val)) return val.find(v => typeof v === 'string' && v.trim().length > 0) || null;
+    return null;
+  };
+
+  const refreshTokenValue = getFirstNonEmpty(req.cookies?.[cookieName]) || getFirstNonEmpty(req.body.refreshToken);
+  const refreshToken = refreshTokenValue;
 
   if (!refreshToken) {
     return next(new AppError('Please provide a refresh token.', 400));
@@ -632,14 +633,15 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
 
   // CRITICAL: Validate single session scope - prevent mixed sessions
   const otherScopeCookieName = scope === 'admin' ? 'customerRefreshToken' : 'adminRefreshToken';
-  const otherScopeToken = req.cookies?.[otherScopeCookieName];
-  if (typeof otherScopeToken === 'string' && otherScopeToken.length > 0) {
+  const otherScopeToken = getFirstNonEmpty(req.cookies?.[otherScopeCookieName]);
+
+  if (otherScopeToken) {
     logSecurityAudit(SECURITY_EVENTS.MIXED_SESSIONS_DETECTED, {
       scope,
       otherScope: scope === 'admin' ? 'customer' : 'admin',
       ip: req.ip,
       path: req.originalUrl,
-      otherTokenValue: otherScopeToken, // Log for debugging
+      otherTokenValue: otherScopeToken, 
     }, { level: 'error', severity: 'critical' });
 
     // Clear both sessions
