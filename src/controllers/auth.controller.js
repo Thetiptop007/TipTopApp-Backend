@@ -50,13 +50,6 @@ const getRefreshCookieOptions = () => ({
   path: '/',
 });
 
-const getLegacyRefreshCookieOptions = () => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  path: '/api/v1/auth',
-});
-
 const parseRefreshTokenExpiryMs = () => {
   const raw = process.env.JWT_REFRESH_EXPIRE || '7d';
   const match = String(raw).trim().match(/^(\d+)([smhd])$/i);
@@ -78,7 +71,6 @@ const parseRefreshTokenExpiryMs = () => {
 };
 
 const setRefreshCookie = (res, scope, token) => {
-  res.clearCookie(getRefreshCookieName(scope), getLegacyRefreshCookieOptions());
   res.cookie(getRefreshCookieName(scope), token, {
     ...getRefreshCookieOptions(),
     maxAge: parseRefreshTokenExpiryMs(),
@@ -87,7 +79,6 @@ const setRefreshCookie = (res, scope, token) => {
 
 const clearRefreshCookie = (res, scope) => {
   res.clearCookie(getRefreshCookieName(scope), getRefreshCookieOptions());
-  res.clearCookie(getRefreshCookieName(scope), getLegacyRefreshCookieOptions());
 };
 
 const getCsrfCookieName = (scope) => `${scope}CsrfToken`;
@@ -99,16 +90,8 @@ const getCsrfCookieOptions = () => ({
   path: '/',
 });
 
-const getLegacyCsrfCookieOptions = () => ({
-  httpOnly: false,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  path: '/api/v1/auth',
-});
-
 const setCsrfCookie = (res, scope) => {
   const token = crypto.randomBytes(32).toString('hex');
-  res.clearCookie(getCsrfCookieName(scope), getLegacyCsrfCookieOptions());
   res.cookie(getCsrfCookieName(scope), token, {
     ...getCsrfCookieOptions(),
     maxAge: 24 * 60 * 60 * 1000,
@@ -118,7 +101,6 @@ const setCsrfCookie = (res, scope) => {
 
 const clearCsrfCookie = (res, scope) => {
   res.clearCookie(getCsrfCookieName(scope), getCsrfCookieOptions());
-  res.clearCookie(getCsrfCookieName(scope), getLegacyCsrfCookieOptions());
 };
 
 const parseDurationToMs = (value, fallbackMs) => {

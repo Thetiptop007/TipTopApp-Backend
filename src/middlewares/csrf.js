@@ -12,16 +12,8 @@ const getCsrfCookieOptions = () => ({
   path: '/',
 });
 
-const getLegacyCsrfCookieOptions = () => ({
-  httpOnly: false,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  path: '/api/v1/auth',
-});
-
 const issueCsrfToken = (res, scope) => {
   const token = crypto.randomBytes(32).toString('hex');
-  res.clearCookie(getCsrfCookieName(scope), getLegacyCsrfCookieOptions());
   res.cookie(getCsrfCookieName(scope), token, {
     ...getCsrfCookieOptions(),
     maxAge: 24 * 60 * 60 * 1000,
@@ -31,7 +23,6 @@ const issueCsrfToken = (res, scope) => {
 
 const clearCsrfToken = (res, scope) => {
   res.clearCookie(getCsrfCookieName(scope), getCsrfCookieOptions());
-  res.clearCookie(getCsrfCookieName(scope), getLegacyCsrfCookieOptions());
 };
 
 const requireCsrf = (scope) => (req, res, next) => {

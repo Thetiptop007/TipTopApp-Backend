@@ -11,8 +11,8 @@ const catchAsync = require('../utils/catchAsync');
  * - Logs all mixed session violations for security auditing
  */
 exports.preventMixedSessions = catchAsync(async (req, res, next) => {
-  const hasAdminRefresh = !!req.cookies.adminRefreshToken;
-  const hasCustomerRefresh = !!req.cookies.customerRefreshToken;
+  const hasAdminRefresh = typeof req.cookies.adminRefreshToken === 'string' && req.cookies.adminRefreshToken.length > 0;
+  const hasCustomerRefresh = typeof req.cookies.customerRefreshToken === 'string' && req.cookies.customerRefreshToken.length > 0;
 
   // If both tokens exist, this is a security violation
   if (hasAdminRefresh && hasCustomerRefresh) {
@@ -23,22 +23,8 @@ exports.preventMixedSessions = catchAsync(async (req, res, next) => {
       method: req.method,
     }, { level: 'error', severity: 'critical' });
 
-    // Clear both sessions immediately
+    // Clear both sessions immediately on root path
     res.clearCookie('adminRefreshToken', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/',
-    });
-
-    res.clearCookie('adminRefreshToken', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/api/v1/auth',
-    });
-
-    res.clearCookie('customerRefreshToken', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
@@ -49,7 +35,7 @@ exports.preventMixedSessions = catchAsync(async (req, res, next) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/api/v1/auth',
+      path: '/',
     });
 
     return res.status(403).json({
@@ -66,8 +52,8 @@ exports.preventMixedSessions = catchAsync(async (req, res, next) => {
  * Validate that only the expected role's tokens exist
  */
 exports.validateSingleSessionScope = (expectedScope) => catchAsync(async (req, res, next) => {
-  const hasAdminRefresh = !!req.cookies.adminRefreshToken;
-  const hasCustomerRefresh = !!req.cookies.customerRefreshToken;
+  const hasAdminRefresh = typeof req.cookies.adminRefreshToken === 'string' && req.cookies.adminRefreshToken.length > 0;
+  const hasCustomerRefresh = typeof req.cookies.customerRefreshToken === 'string' && req.cookies.customerRefreshToken.length > 0;
 
   // If trying to use admin scope but customer token exists
   if (expectedScope === 'admin' && hasCustomerRefresh) {

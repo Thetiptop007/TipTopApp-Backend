@@ -64,6 +64,9 @@ async function initializeRedis() {
     logger.system('SECURITY_INIT_FAILED', 'Failed to initialize security layers', { errorMessage: error.message }, { level: 'error', severity: 'high' });
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    logger.system('SECURITY_REDIS_MISSING', 'CRITICAL: REDIS_HOST not configured in production. Using in-memory fallback which is NOT recommended for distributed environments (Render/Heroku).', {}, { level: 'error', severity: 'high' });
+  }
   return null;
 }
 
