@@ -458,7 +458,7 @@ userSchema.methods.generateAuthToken = function (scope = this.getRefreshScope())
   const sv = this.sessionVersion || 0;
 
   return jwt.sign({ sub: this._id.toString(), role: this.role, type: 'access', sid, sv, v: 1 }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE,
+    expiresIn: process.env.JWT_EXPIRE || '24h',
   });
 };
 
@@ -470,7 +470,7 @@ userSchema.methods.generateRefreshToken = function (scope = this.getRefreshScope
   const sv = this.sessionVersion || 0;
 
   return jwt.sign({ sub: this._id.toString(), role: this.role, type: 'refresh', sid, sv, v: 1 }, process.env.JWT_REFRESH_SECRET, {
-    expiresIn: process.env.JWT_REFRESH_EXPIRE,
+    expiresIn: process.env.JWT_REFRESH_EXPIRE || '7d',
   });
 };
 

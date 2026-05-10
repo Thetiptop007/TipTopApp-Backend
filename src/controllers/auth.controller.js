@@ -16,6 +16,7 @@ const {
   incrementTokenMismatch,
 } = require('../services/metrics.service');
 const sessionCache = require('../services/sessionCache');
+const { sweepCookies } = require('../utils/cookieUtils');
 
 const AUTH_VERSION = 'v2';
 const SESSION_CACHE_KEY = (userId, scope) => `${userId}-${scope}`;
@@ -215,18 +216,18 @@ const clearSessionCache = (userId, scope) => {
  */
 const clearOtherRoleCookies = (req, res, currentScope) => {
   const otherScope = currentScope === 'admin' ? 'customer' : 'admin';
+  const cookies = req?.cookies || {};
   
-  // Only clear if the other scope's cookies actually exist in the request
-  // This prevents creating empty "phantom" cookies in the browser
-  const hasOtherRefresh = req.cookies?.[getRefreshCookieName(otherScope)];
-  const hasOtherCsrf = req.cookies?.[getCsrfCookieName(otherScope)];
-
-  if (hasOtherRefresh) {
-    clearRefreshCookie(res, otherScope);
-  }
-  
-  if (hasOtherCsrf) {
-    clearCsrfCookie(res, otherScope);
+  // Only clear if the cookie actually exists in the request to prevent "phantom" empty cookies
+  if (cookies[`${otherScope}RefreshToken`] || cookies[`${otherScope}CsrfToken`] || cookies['adminRefreshToken'] || cookies['customerRefreshToken']) {
+    sweepCookies(res, `${otherScope}RefreshToken`);
+    sweepCookies(res, `${otherScope}CsrfToken`);
+    
+    // Sweep both roles explicitly to be safe
+    sweepCookies(res, 'adminRefreshToken');
+    sweepCookies(res, 'customerRefreshToken');
+    sweepCookies(res, 'adminCsrfToken');
+    sweepCookies(res, 'customerCsrfToken');
   }
 };
 
@@ -236,7 +237,7 @@ const clearOtherRoleCookies = (req, res, currentScope) => {
 const createSendToken = async (user, statusCode, req, res, message = 'Success') => {
   const scope = user.role === 'admin' ? 'admin' : 'customer';
   
-  // CRITICAL: Clear all cookies for the other role to enforce session exclusivity
+  // CRITICAL: Clear all cookies for the other role to enforce session exclusivity (only if they exist)
   clearOtherRoleCookies(req, res, scope);
   
   const sessionId = crypto.randomUUID();
@@ -625,15 +626,9 @@ exports.logout = catchAsync(async (req, res, next) => {
 exports.refreshToken = catchAsync(async (req, res, next) => {
   const scope = getAuthScope(req);
   const cookieName = getRefreshCookieName(scope);
-  const getFirstNonEmpty = (val) => {
-    if (typeof val === 'string') return val.trim().length > 0 ? val : null;
-    if (Array.isArray(val)) return val.find(v => typeof v === 'string' && v.trim().length > 0) || null;
-    return null;
-  };
-
-  const refreshTokenValue = getFirstNonEmpty(req.cookies?.[cookieName]) || getFirstNonEmpty(req.body.refreshToken);
-  const refreshToken = refreshTokenValue;
-
+  const { getFirstNonEmpty } = require('../utils/cookieUtils');
+  const refreshToken = getFirstNonEmpty(req.cookies?.[cookieName]) || req.body.refreshToken;
+  
   if (!refreshToken) {
     return next(new AppError('Please provide a refresh token.', 400));
   }
@@ -1114,6 +1109,8 @@ exports.getMe = catchAsync(async (req, res, next) => {
   const cachedMe = sessionCache.get(cacheKey);
 
   if (cachedMe?.user) {
+    const existingCsrfToken = req.cookies?.[getCsrfCookieName(scope)];
+    const csrfToken = existingCsrfToken || setCsrfCookie(res, scope);
     return res.status(200).json({
       status: 'success',
       message: 'Current user loaded successfully.',
@@ -1121,12 +1118,14 @@ exports.getMe = catchAsync(async (req, res, next) => {
         user: cachedMe.user,
         role: cachedMe.role || user.role,
         authenticated: true,
-        csrfToken: null,
+        csrfToken,
         expiresAt: cachedMe.expiresAt || req.auth?.expiresAt || user.authSessions?.[scope]?.expiresAt || null,
         authVersion: cachedMe.authVersion || AUTH_VERSION,
       },
     });
   }
+
+  const csrfToken = setCsrfCookie(res, scope);
 
   res.status(200).json({
     status: 'success',
@@ -1135,7 +1134,7 @@ exports.getMe = catchAsync(async (req, res, next) => {
       user: serializeMinimalAuthUser(user),
       role: user.role,
       authenticated: true,
-      csrfToken: null,
+      csrfToken,
       expiresAt: req.auth?.expiresAt || user.authSessions?.[req.auth?.scope || (user.role === 'admin' ? 'admin' : 'customer')]?.expiresAt || null,
       authVersion: AUTH_VERSION,
     },

@@ -202,6 +202,10 @@ describe('Auth lifecycle integration', () => {
     customer.authSessions.customer.rotatedAt = new Date(Date.now() - 20 * 1000);
     await customer.save({ validateBeforeSave: false });
 
+    // Invalidate session cache for this user to ensure the backend reads the updated DB state
+    const sessionCache = require('../../src/services/sessionCache');
+    sessionCache.delete(`${customer._id.toString()}-customer`);
+
     await request(app)
       .get('/api/v1/auth/customer/me')
       .set('Authorization', `Bearer ${oldAccessToken}`)

@@ -78,7 +78,6 @@ const mountDeviceTokenRoutes = (scope) => {
 ===================================================== */
 router.post(
   '/admin/login',
-  validateSingleSessionScope('admin'),
   loginLimiter,
   authBruteForceLimiter({ windowMs: 15 * 60 * 1000, maxAttempts: 8 }),
   authValidator.validate(authValidator.adminLoginSchema),
@@ -140,7 +139,6 @@ router.post(
 
 router.post(
   '/customer/login',
-  validateSingleSessionScope('customer'),
   loginLimiter,
   authBruteForceLimiter({ windowMs: 15 * 60 * 1000, maxAttempts: 8 }),
   authValidator.validate(authValidator.customerLoginSchema),
