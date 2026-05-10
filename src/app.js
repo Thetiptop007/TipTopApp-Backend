@@ -56,20 +56,16 @@ app.use(
 // CORS configuration (FAST)
 const corsOptions = {
   origin: function (origin, callback) {
-    // In production, allow specific origins from CLIENT_URL
     const whitelist = process.env.CLIENT_URL
       ? process.env.CLIENT_URL.split(',').map(url => url.trim()).filter(url => url)
-      : [
-          'http://localhost:5173',
-          'http://localhost:5174',
-          'http://localhost:3000',
-          'https://the-tip-top-git-feature-admin-thetiptop007s-projects.vercel.app',
-          'https://the-tip-top-thetiptop007s-projects.vercel.app',
-          'https://the-tip-top.vercel.app'
-        ];
+      : [];
     
-    // Allow requests with no origin (mobile apps, Postman, etc.)
-    if (!origin || whitelist.indexOf(origin) !== -1 || whitelist.some(allowed => origin && origin.includes('vercel.app'))) {
+    const isAllowedOrigin = !origin || 
+      whitelist.includes(origin) || 
+      (origin && whitelist.some(allowed => allowed.includes('*') && new RegExp('^' + allowed.replace(/\*/g, '.*') + '$').test(origin))) ||
+      (origin && origin.includes('vercel.app')); // Keep vercel helper or remove if strictly dynamic
+
+    if (isAllowedOrigin) {
       callback(null, true);
     } else {
       if (process.env.NODE_ENV === 'development') {
@@ -87,7 +83,7 @@ const corsOptions = {
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Idempotency-Key', 'X-Idempotency-Key', 'X-CSRF-Token', 'X-Request-Id'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Idempotency-Key', 'X-Idempotency-Key', 'X-CSRF-Token', 'X-Request-Id', 'X-Token-Scope', 'X-Refresh-Token'],
 };
 
 app.use(cors(corsOptions));

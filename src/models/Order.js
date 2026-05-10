@@ -272,7 +272,7 @@ const orderSchema = new mongoose.Schema(
     // Order Status & Timeline
     status: {
       type: String,
-      enum: ['PENDING', 'ACCEPTED', 'READY', 'READY_FOR_PICKUP', 'ASSIGNED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'COMPLETED'],
+      enum: ['PENDING', 'ACCEPTED', 'PREPARING', 'READY', 'READY_FOR_PICKUP', 'ASSIGNED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'COMPLETED'],
       default: 'PENDING',
     },
 

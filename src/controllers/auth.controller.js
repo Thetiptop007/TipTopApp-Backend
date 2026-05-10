@@ -213,30 +213,31 @@ const clearSessionCache = (userId, scope) => {
  * Enforce session exclusivity: Clear all cookies for the other role
  * when logging in with a specific role
  */
-const clearOtherRoleCookies = (res, currentScope) => {
+const clearOtherRoleCookies = (req, res, currentScope) => {
   const otherScope = currentScope === 'admin' ? 'customer' : 'admin';
+  const cookies = req?.cookies || {};
   
-  // Clear refresh token for other scope
-  clearRefreshCookie(res, otherScope);
-  
-  // Clear CSRF token for other scope
-  clearCsrfCookie(res, otherScope);
-  
-  // Sweep legacy paths one last time just in case (to fix duplication issues on Render)
-  res.clearCookie('adminRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-  res.clearCookie('customerRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-  res.clearCookie('adminCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-  res.clearCookie('customerCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+  // Only clear if the cookie actually exists in the request to prevent "phantom" empty cookies
+  if (cookies[`${otherScope}RefreshToken`] || cookies[`${otherScope}CsrfToken`] || cookies['adminRefreshToken'] || cookies['customerRefreshToken']) {
+    clearRefreshCookie(res, otherScope);
+    clearCsrfCookie(res, otherScope);
+    
+    // Sweep legacy paths conditionally too
+    res.clearCookie('adminRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+    res.clearCookie('customerRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+    res.clearCookie('adminCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+    res.clearCookie('customerCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+  }
 };
 
 /**
  * Generate JWT tokens and send response
  */
-const createSendToken = async (user, statusCode, res, message = 'Success') => {
+const createSendToken = async (user, statusCode, req, res, message = 'Success') => {
   const scope = user.role === 'admin' ? 'admin' : 'customer';
   
-  // CRITICAL: Clear all cookies for the other role to enforce session exclusivity
-  clearOtherRoleCookies(res, scope);
+  // CRITICAL: Clear all cookies for the other role to enforce session exclusivity (only if they exist)
+  clearOtherRoleCookies(req, res, scope);
   
   const sessionId = crypto.randomUUID();
   user.authSessions = user.authSessions || {};
@@ -481,7 +482,7 @@ exports.register = catchAsync(async (req, res, next) => {
     userRole: user.role,
   });
 
-  await createSendToken(user, 201, res, 'Account created successfully.');
+  await createSendToken(user, 201, req, res, 'Account created successfully.');
 });
 
 /**
@@ -574,7 +575,7 @@ exports.login = catchAsync(async (req, res, next) => {
   });
   incrementLoginOutcome(scope, 'success');
 
-  await createSendToken(user, 200, res, 'Login successful!');
+  await createSendToken(user, 200, req, res, 'Login successful!');
 });
 
 /**
@@ -624,8 +625,15 @@ exports.logout = catchAsync(async (req, res, next) => {
 exports.refreshToken = catchAsync(async (req, res, next) => {
   const scope = getAuthScope(req);
   const cookieName = getRefreshCookieName(scope);
-  const refreshToken = req.cookies?.[cookieName] || req.body.refreshToken;
+  // Handle potential array-valued cookies from production duplications
+  const getFirstNonEmpty = (val) => {
+    if (Array.isArray(val)) return val.find(v => typeof v === 'string' && v.trim().length > 0) || null;
+    if (typeof val === 'string' && val.trim().length > 0) return val;
+    return null;
+  };
 
+  const refreshToken = getFirstNonEmpty(req.cookies?.[cookieName]) || req.body.refreshToken;
+  
   if (!refreshToken) {
     return next(new AppError('Please provide a refresh token.', 400));
   }
@@ -973,7 +981,7 @@ exports.resetPassword = catchAsync(async (req, res, next) => {
   });
 
   // Log user in with new password
-  createSendToken(user, 200, res, 'Password reset successful!');
+  createSendToken(user, 200, req, res, 'Password reset successful!');
 });
 
 /**
@@ -1006,7 +1014,7 @@ exports.changePassword = catchAsync(async (req, res, next) => {
   logger.auth('AUTH_PASSWORD_CHANGED', 'Password changed successfully', { userId: user._id });
 
   // Log user in with new password
-  createSendToken(user, 200, res, 'Password changed successfully!');
+  createSendToken(user, 200, req, res, 'Password changed successfully!');
 });
 
 /**
