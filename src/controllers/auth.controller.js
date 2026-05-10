@@ -19,6 +19,7 @@ const sessionCache = require('../services/sessionCache');
 const { sweepCookies } = require('../utils/cookieUtils');
 
 const AUTH_VERSION = 'v2';
+const isProduction = process.env.NODE_ENV === 'production';
 const SESSION_CACHE_KEY = (userId, scope) => `${userId}-${scope}`;
 const getTokenType = (decoded = {}) => decoded.type || decoded.tokenType || null;
 const getTokenSubject = (decoded = {}) => decoded.sub || decoded.id || null;
@@ -46,8 +47,8 @@ const getRefreshCookieName = (scope) => (scope === 'admin' ? 'adminRefreshToken'
 
 const getRefreshCookieOptions = () => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+  secure: isProduction,
+  sameSite: isProduction ? 'none' : 'lax',
   path: '/',
 });
 
@@ -86,8 +87,8 @@ const getCsrfCookieName = (scope) => `${scope}CsrfToken`;
 
 const getCsrfCookieOptions = () => ({
   httpOnly: false,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+  secure: isProduction,
+  sameSite: isProduction ? 'none' : 'lax',
   path: '/',
 });
 
@@ -629,6 +630,12 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
   const { getFirstNonEmpty } = require('../utils/cookieUtils');
   const refreshToken = getFirstNonEmpty(req.cookies?.[cookieName]) || req.body.refreshToken;
   
+  if (process.env.NODE_ENV === 'production') {
+    const rawCookie = req.get('cookie');
+    console.log(`[AUTH_TRACE] Refresh - Raw Header: ${rawCookie ? 'PRESENT' : 'MISSING'}, ParsedKeys: ${Object.keys(req.cookies || {}).join(', ')}`);
+    console.log(`[AUTH_TRACE] Refresh Attempt - Scope: ${scope}, CookieFound: ${!!req.cookies?.[cookieName]}, BodyFound: ${!!req.body.refreshToken}, FinalTokenFound: ${!!refreshToken}`);
+  }
+
   if (!refreshToken) {
     return next(new AppError('Please provide a refresh token.', 400));
   }
