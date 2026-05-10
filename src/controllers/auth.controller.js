@@ -222,7 +222,11 @@ const clearOtherRoleCookies = (res, currentScope) => {
   // Clear CSRF token for other scope
   clearCsrfCookie(res, otherScope);
   
-
+  // Sweep legacy paths one last time just in case (to fix duplication issues on Render)
+  res.clearCookie('adminRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+  res.clearCookie('customerRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+  res.clearCookie('adminCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+  res.clearCookie('customerCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
 };
 
 /**
@@ -628,12 +632,14 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
 
   // CRITICAL: Validate single session scope - prevent mixed sessions
   const otherScopeCookieName = scope === 'admin' ? 'customerRefreshToken' : 'adminRefreshToken';
-  if (req.cookies?.[otherScopeCookieName]) {
+  const otherScopeToken = req.cookies?.[otherScopeCookieName];
+  if (typeof otherScopeToken === 'string' && otherScopeToken.length > 0) {
     logSecurityAudit(SECURITY_EVENTS.MIXED_SESSIONS_DETECTED, {
       scope,
       otherScope: scope === 'admin' ? 'customer' : 'admin',
       ip: req.ip,
       path: req.originalUrl,
+      otherTokenValue: otherScopeToken, // Log for debugging
     }, { level: 'error', severity: 'critical' });
 
     // Clear both sessions
