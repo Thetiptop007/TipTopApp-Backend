@@ -213,24 +213,31 @@ const clearSessionCache = (userId, scope) => {
  * Enforce session exclusivity: Clear all cookies for the other role
  * when logging in with a specific role
  */
-const clearOtherRoleCookies = (res, currentScope) => {
+const clearOtherRoleCookies = (req, res, currentScope) => {
   const otherScope = currentScope === 'admin' ? 'customer' : 'admin';
   
-  // Clear refresh token for other scope
-  clearRefreshCookie(res, otherScope);
+  // Only clear if the other scope's cookies actually exist in the request
+  // This prevents creating empty "phantom" cookies in the browser
+  const hasOtherRefresh = req.cookies?.[getRefreshCookieName(otherScope)];
+  const hasOtherCsrf = req.cookies?.[getCsrfCookieName(otherScope)];
+
+  if (hasOtherRefresh) {
+    clearRefreshCookie(res, otherScope);
+  }
   
-  // Clear CSRF token for other scope
-  clearCsrfCookie(res, otherScope);
+  if (hasOtherCsrf) {
+    clearCsrfCookie(res, otherScope);
+  }
 };
 
 /**
  * Generate JWT tokens and send response
  */
-const createSendToken = async (user, statusCode, res, message = 'Success') => {
+const createSendToken = async (user, statusCode, req, res, message = 'Success') => {
   const scope = user.role === 'admin' ? 'admin' : 'customer';
   
   // CRITICAL: Clear all cookies for the other role to enforce session exclusivity
-  clearOtherRoleCookies(res, scope);
+  clearOtherRoleCookies(req, res, scope);
   
   const sessionId = crypto.randomUUID();
   user.authSessions = user.authSessions || {};
@@ -475,7 +482,7 @@ exports.register = catchAsync(async (req, res, next) => {
     userRole: user.role,
   });
 
-  await createSendToken(user, 201, res, 'Account created successfully.');
+  await createSendToken(user, 201, req, res, 'Account created successfully.');
 });
 
 /**
@@ -568,7 +575,7 @@ exports.login = catchAsync(async (req, res, next) => {
   });
   incrementLoginOutcome(scope, 'success');
 
-  await createSendToken(user, 200, res, 'Login successful!');
+  await createSendToken(user, 200, req, res, 'Login successful!');
 });
 
 /**
@@ -840,6 +847,10 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     sessionId: nextSessionId,
     previousSession,
   });
+  
+  // Clear other scope cookies during refresh too if they exist
+  clearOtherRoleCookies(req, res, scope);
+
   setRefreshCookie(res, scope, newRefreshToken);
   const csrfToken = setCsrfCookie(res, scope);
   updateSessionCache(user, scope);
@@ -975,7 +986,7 @@ exports.resetPassword = catchAsync(async (req, res, next) => {
   });
 
   // Log user in with new password
-  createSendToken(user, 200, res, 'Password reset successful!');
+  createSendToken(user, 200, req, res, 'Password reset successful!');
 });
 
 /**
@@ -1008,7 +1019,7 @@ exports.changePassword = catchAsync(async (req, res, next) => {
   logger.auth('AUTH_PASSWORD_CHANGED', 'Password changed successfully', { userId: user._id });
 
   // Log user in with new password
-  createSendToken(user, 200, res, 'Password changed successfully!');
+  createSendToken(user, 200, req, res, 'Password changed successfully!');
 });
 
 /**
