@@ -56,28 +56,23 @@ app.use(
 // CORS configuration (FAST)
 const corsOptions = {
   origin: function (origin, callback) {
-    const whitelist = process.env.CLIENT_URL
-      ? process.env.CLIENT_URL.split(',').map(url => url.trim()).filter(url => url)
-      : [];
+    const whitelist = [
+      'https://www.thetiptop.in',
+      'https://thetiptop.in',
+      'http://localhost:5173',
+      'http://localhost:3000'
+    ];
     
     const isAllowedOrigin = !origin || 
       whitelist.includes(origin) || 
       (origin && whitelist.some(allowed => allowed.includes('*') && new RegExp('^' + allowed.replace(/\*/g, '.*') + '$').test(origin))) ||
-      (origin && origin.includes('vercel.app')); // Keep vercel helper or remove if strictly dynamic
+      (origin && origin.includes('vercel.app'));
 
     if (isAllowedOrigin) {
       callback(null, true);
     } else {
-      if (process.env.NODE_ENV === 'development') {
-        logger.system('CORS_ORIGIN_ALLOWED_WITH_DEBUG_OVERRIDE', 'CORS origin allowed in development override', {
-          origin,
-        });
-      } else {
-        logger.system('CORS_ORIGIN_ALLOWED_WITH_OVERRIDE', 'Unknown origin allowed by override', {
-          origin,
-        }, { level: 'warn', severity: 'medium' });
-      }
-      callback(null, true); // Temporarily allow all origins for debugging
+      logger.system('CORS_REJECTED', 'Origin not allowed by CORS', { origin }, { level: 'warn', severity: 'medium' });
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
