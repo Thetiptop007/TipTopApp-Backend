@@ -16,6 +16,7 @@ const {
   incrementTokenMismatch,
 } = require('../services/metrics.service');
 const sessionCache = require('../services/sessionCache');
+const { sweepCookies } = require('../utils/cookieUtils');
 
 const AUTH_VERSION = 'v2';
 const SESSION_CACHE_KEY = (userId, scope) => `${userId}-${scope}`;
@@ -219,14 +220,14 @@ const clearOtherRoleCookies = (req, res, currentScope) => {
   
   // Only clear if the cookie actually exists in the request to prevent "phantom" empty cookies
   if (cookies[`${otherScope}RefreshToken`] || cookies[`${otherScope}CsrfToken`] || cookies['adminRefreshToken'] || cookies['customerRefreshToken']) {
-    clearRefreshCookie(res, otherScope);
-    clearCsrfCookie(res, otherScope);
+    sweepCookies(res, `${otherScope}RefreshToken`);
+    sweepCookies(res, `${otherScope}CsrfToken`);
     
-    // Sweep legacy paths conditionally too
-    res.clearCookie('adminRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-    res.clearCookie('customerRefreshToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-    res.clearCookie('adminCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
-    res.clearCookie('customerCsrfToken', { path: '/api/v1/auth', secure: true, sameSite: 'none' });
+    // Sweep both roles explicitly to be safe
+    sweepCookies(res, 'adminRefreshToken');
+    sweepCookies(res, 'customerRefreshToken');
+    sweepCookies(res, 'adminCsrfToken');
+    sweepCookies(res, 'customerCsrfToken');
   }
 };
 
@@ -1109,6 +1110,8 @@ exports.getMe = catchAsync(async (req, res, next) => {
   const cachedMe = sessionCache.get(cacheKey);
 
   if (cachedMe?.user) {
+    const existingCsrfToken = req.cookies?.[getCsrfCookieName(scope)];
+    const csrfToken = existingCsrfToken || setCsrfCookie(res, scope);
     return res.status(200).json({
       status: 'success',
       message: 'Current user loaded successfully.',
@@ -1116,12 +1119,14 @@ exports.getMe = catchAsync(async (req, res, next) => {
         user: cachedMe.user,
         role: cachedMe.role || user.role,
         authenticated: true,
-        csrfToken: null,
+        csrfToken,
         expiresAt: cachedMe.expiresAt || req.auth?.expiresAt || user.authSessions?.[scope]?.expiresAt || null,
         authVersion: cachedMe.authVersion || AUTH_VERSION,
       },
     });
   }
+
+  const csrfToken = setCsrfCookie(res, scope);
 
   res.status(200).json({
     status: 'success',
@@ -1130,7 +1135,7 @@ exports.getMe = catchAsync(async (req, res, next) => {
       user: serializeMinimalAuthUser(user),
       role: user.role,
       authenticated: true,
-      csrfToken: null,
+      csrfToken,
       expiresAt: req.auth?.expiresAt || user.authSessions?.[req.auth?.scope || (user.role === 'admin' ? 'admin' : 'customer')]?.expiresAt || null,
       authVersion: AUTH_VERSION,
     },

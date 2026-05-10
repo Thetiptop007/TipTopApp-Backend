@@ -26,7 +26,8 @@ const clearCsrfToken = (res, scope) => {
 };
 
 const requireCsrf = (scope) => (req, res, next) => {
-  const cookieToken = req.cookies?.[getCsrfCookieName(scope)];
+  const { getFirstNonEmpty } = require('../utils/cookieUtils');
+  const cookieToken = getFirstNonEmpty(req.cookies?.[getCsrfCookieName(scope)]);
   const headerToken = req.get('x-csrf-token');
 
   if (process.env.NODE_ENV !== 'production') {

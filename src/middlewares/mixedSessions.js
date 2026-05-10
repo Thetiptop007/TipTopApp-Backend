@@ -1,16 +1,11 @@
 const { logSecurityAudit, SECURITY_EVENTS } = require('../services/logging/securityAudit.logger');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
+const { sweepCookies } = require('../utils/cookieUtils');
 
 /**
- * Middleware to prevent simultaneous admin and customer sessions
- *
- * Enforces strict session exclusivity:
- * - Only ONE active auth role per browser session
- * - Rejects requests if both admin and customer cookies exist
- * - Logs all mixed session violations for security auditing
+ * Robust cookie parser that handles duplicates and arrays from production environments
  */
-// Robust cookie parser that handles duplicates and arrays from production environments
 const parseRobustCookies = (cookieHeader) => {
   const cookies = {};
   if (!cookieHeader) return cookies;
@@ -41,44 +36,58 @@ exports.preventMixedSessions = catchAsync(async (req, res, next) => {
     req.cookies = { ...req.cookies, ...robustCookies };
   }
 
-  // Allow login/logout/refresh to bypass this check as they are the points of transition
-  // Actually, refresh should STILL check, but LOGIN/LOGOUT must skip
+  // Allow login/logout/register to bypass this check as they are the points of transition
   if (req.path.includes('/login') || req.path.includes('/logout') || req.path.includes('/register')) {
     return next();
   }
 
-  const getFirstNonEmpty = (val) => {
-    if (Array.isArray(val)) return val.find(v => typeof v === 'string' && v.trim().length > 0) || null;
-    if (typeof val === 'string' && val.trim().length > 0) return val;
-    return null;
-  };
+  const { getFirstNonEmpty } = require('../utils/cookieUtils');
 
   const hasAdminRefresh = !!getFirstNonEmpty(req.cookies.adminRefreshToken);
   const hasCustomerRefresh = !!getFirstNonEmpty(req.cookies.customerRefreshToken);
 
-  // If both tokens exist, this is a security violation
+  // If both tokens exist, this is a potential security violation
   if (hasAdminRefresh && hasCustomerRefresh) {
+    // Determine the intended scope to decide which token to keep
+    const tokenScopeHeader = req.get('x-token-scope');
+    const path = req.path.toLowerCase();
+    const isExplicitAdminRoute = path.includes('/admin/');
+    const isExplicitCustomerRoute = path.includes('/customer/');
+    
+    const intendedScope = tokenScopeHeader === 'admin' || isExplicitAdminRoute ? 'admin' : 
+                         (tokenScopeHeader === 'customer' || isExplicitCustomerRoute ? 'customer' : null);
+
+    if (intendedScope) {
+      // Smarter correction: only clear the token that doesn't match the intended scope
+      const conflictingScope = intendedScope === 'admin' ? 'customer' : 'admin';
+      
+      logSecurityAudit(SECURITY_EVENTS.MIXED_SESSIONS_DETECTED, {
+        ip: req.ip,
+        intendedScope,
+        conflictingScope,
+        path: req.originalUrl,
+        action: 'conflicting_token_cleared',
+      }, { level: 'warn', severity: 'medium' });
+
+      sweepCookies(res, `${conflictingScope}RefreshToken`);
+      sweepCookies(res, `${conflictingScope}CsrfToken`);
+      
+      return next();
+    }
+
+    // If we can't determine the intended scope, fall back to clearing both (original aggressive behavior)
     logSecurityAudit(SECURITY_EVENTS.MIXED_SESSIONS_DETECTED, {
       ip: req.ip,
       userAgent: req.get('user-agent'),
       path: req.originalUrl,
       method: req.method,
+      action: 'all_tokens_cleared',
     }, { level: 'error', severity: 'critical' });
 
-    // Clear both sessions immediately on root path
-    res.clearCookie('adminRefreshToken', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/',
-    });
-
-    res.clearCookie('customerRefreshToken', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/',
-    });
+    sweepCookies(res, 'adminRefreshToken');
+    sweepCookies(res, 'customerRefreshToken');
+    sweepCookies(res, 'adminCsrfToken');
+    sweepCookies(res, 'customerCsrfToken');
 
     return res.status(403).json({
       status: 'error',
@@ -94,11 +103,7 @@ exports.preventMixedSessions = catchAsync(async (req, res, next) => {
  * Validate that only the expected role's tokens exist
  */
 exports.validateSingleSessionScope = (expectedScope) => catchAsync(async (req, res, next) => {
-  const getFirstNonEmpty = (val) => {
-    if (Array.isArray(val)) return val.find(v => typeof v === 'string' && v.trim().length > 0) || null;
-    if (typeof val === 'string' && val.trim().length > 0) return val;
-    return null;
-  };
+  const { getFirstNonEmpty } = require('../utils/cookieUtils');
 
   const hasAdminRefresh = !!getFirstNonEmpty(req.cookies.adminRefreshToken);
   const hasCustomerRefresh = !!getFirstNonEmpty(req.cookies.customerRefreshToken);
@@ -111,6 +116,9 @@ exports.validateSingleSessionScope = (expectedScope) => catchAsync(async (req, r
       ip: req.ip,
       path: req.originalUrl,
     }, { level: 'warn', severity: 'high' });
+
+    sweepCookies(res, 'customerRefreshToken');
+    sweepCookies(res, 'customerCsrfToken');
 
     return res.status(403).json({
       status: 'error',
@@ -128,6 +136,9 @@ exports.validateSingleSessionScope = (expectedScope) => catchAsync(async (req, r
       path: req.originalUrl,
     }, { level: 'warn', severity: 'high' });
 
+    sweepCookies(res, 'adminRefreshToken');
+    sweepCookies(res, 'adminCsrfToken');
+
     return res.status(403).json({
       status: 'error',
       code: 'SCOPE_VIOLATION',
@@ -137,3 +148,4 @@ exports.validateSingleSessionScope = (expectedScope) => catchAsync(async (req, r
 
   next();
 });
+
