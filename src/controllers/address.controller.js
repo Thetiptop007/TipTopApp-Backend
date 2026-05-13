@@ -26,7 +26,7 @@ exports.getAddresses = catchAsync(async (req, res, next) => {
  * @access  Private (Customer)
  */
 exports.addAddress = catchAsync(async (req, res, next) => {
-  const { type, label, street, apartment, city, state, zipCode, landmark, isDefault } = req.body;
+  const { type, label, area, addressLine, landmark, isDefault } = req.body;
 
   const user = await User.findById(req.user.id);
 
@@ -48,11 +48,8 @@ exports.addAddress = catchAsync(async (req, res, next) => {
   user.addresses.push({
     type,
     label,
-    street,
-    apartment,
-    city,
-    state,
-    zipCode,
+    area,
+    addressLine,
     landmark,
     isDefault: makeDefault,
   });
@@ -79,7 +76,7 @@ exports.addAddress = catchAsync(async (req, res, next) => {
  */
 exports.updateAddress = catchAsync(async (req, res, next) => {
   const { addressId } = req.params;
-  const { type, label, street, apartment, city, state, zipCode, landmark, isDefault } = req.body;
+  const { type, label, area, addressLine, landmark, isDefault } = req.body;
 
   const user = await User.findById(req.user.id);
 
@@ -105,11 +102,8 @@ exports.updateAddress = catchAsync(async (req, res, next) => {
   // Update fields
   if (type !== undefined) address.type = type;
   if (label !== undefined) address.label = label;
-  if (street !== undefined) address.street = street;
-  if (apartment !== undefined) address.apartment = apartment;
-  if (city !== undefined) address.city = city;
-  if (state !== undefined) address.state = state;
-  if (zipCode !== undefined) address.zipCode = zipCode;
+  if (area !== undefined) address.area = area;
+  if (addressLine !== undefined) address.addressLine = addressLine;
   if (landmark !== undefined) address.landmark = landmark;
   if (isDefault !== undefined) address.isDefault = isDefault;
 

@@ -1120,10 +1120,8 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       date: order.createdAt.toISOString().split('T')[0],
       time: order.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }),
       address: {
-        street: order.deliveryAddress?.street || '',
-        city: order.deliveryAddress?.city || '',
-        state: order.deliveryAddress?.state || '',
-        zip: order.deliveryAddress?.zip || order.deliveryAddress?.postalCode || ''
+        area: order.deliveryAddress?.area || '',
+        addressLine: order.deliveryAddress?.addressLine || ''
       },
       image: order.items?.[0]?.image || ''
     };
@@ -1345,10 +1343,8 @@ exports.getOrderDetails = catchAsync(async (req, res, next) => {
     date: order.createdAt.toISOString().split('T')[0],
     time: order.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }),
     address: {
-      street: order.deliveryAddress?.street || '',
-      city: order.deliveryAddress?.city || '',
-      state: order.deliveryAddress?.state || '',
-      zip: order.deliveryAddress?.zip || order.deliveryAddress?.postalCode || ''
+      area: order.deliveryAddress?.area || '',
+      addressLine: order.deliveryAddress?.addressLine || ''
     },
     image: order.items?.[0]?.image || ''
   };
@@ -1535,10 +1531,8 @@ exports.createAdminOrder = catchAsync(async (req, res, next) => {
       finalAmount
     },
     deliveryAddress: orderType === 'DELIVERY' ? {
-      street: deliveryAddress.street,
-      city: deliveryAddress.city,
-      state: deliveryAddress.state,
-      zipCode: deliveryAddress.zipCode
+      area: deliveryAddress.area,
+      addressLine: deliveryAddress.addressLine
     } : undefined,
     orderType: orderType || 'DELIVERY',
     paymentMethod,

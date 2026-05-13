@@ -11,24 +11,14 @@ const addressSchema = new mongoose.Schema({
     default: 'home',
   },
   label: String,
-  street: {
+  area: {
     type: String,
-    required: [true, 'Street address is required'],
+    required: [true, 'Area is required'],
   },
-  apartment: String,
-  city: {
+  addressLine: {
     type: String,
-    required: [true, 'City is required'],
+    required: [true, 'Address details are required'],
   },
-  state: {
-    type: String,
-    required: [true, 'State is required'],
-  },
-  zipCode: {
-    type: String,
-    required: [true, 'Zip code is required'],
-  },
-  landmark: String,
   coordinates: {
     type: {
       type: String,

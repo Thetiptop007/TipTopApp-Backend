@@ -12,32 +12,13 @@ const addressSchema = Joi.object({
   label: Joi.string().trim().max(50).allow('').optional().messages({
     'string.max': 'Label is too long (max 50 characters)',
   }),
-  street: Joi.string().trim().min(5).max(200).required().messages({
-    'string.empty': 'Street address is required',
-    'string.min': 'Street address must be at least 5 characters',
-    'string.max': 'Street address is too long (max 200 characters)',
+  area: Joi.string().trim().required().messages({
+    'string.empty': 'Area is required',
   }),
-  apartment: Joi.string().trim().max(100).allow('').optional().messages({
-    'string.max': 'Apartment info is too long (max 100 characters)',
-  }),
-  city: Joi.string().trim().min(2).max(50).pattern(/^[a-zA-Z\s]+$/).required().messages({
-    'string.empty': 'City is required',
-    'string.min': 'City name must be at least 2 characters',
-    'string.max': 'City name is too long (max 50 characters)',
-    'string.pattern.base': 'City name should only contain letters',
-  }),
-  state: Joi.string().trim().min(2).max(50).pattern(/^[a-zA-Z\s]+$/).required().messages({
-    'string.empty': 'State is required',
-    'string.min': 'State name must be at least 2 characters',
-    'string.max': 'State name is too long (max 50 characters)',
-    'string.pattern.base': 'State name should only contain letters',
-  }),
-  zipCode: Joi.string().pattern(/^\d{6}$/).required().messages({
-    'string.empty': 'Zip code is required',
-    'string.pattern.base': 'Zip code must be exactly 6 digits',
-  }),
-  landmark: Joi.string().trim().max(100).allow('').optional().messages({
-    'string.max': 'Landmark is too long (max 100 characters)',
+  addressLine: Joi.string().trim().min(5).max(300).required().messages({
+    'string.empty': 'Address details are required',
+    'string.min': 'Address details must be at least 5 characters',
+    'string.max': 'Address details are too long (max 300 characters)',
   }),
   isDefault: Joi.boolean().optional(),
 });
@@ -75,28 +56,12 @@ exports.validateUpdateAddress = (req, res, next) => {
     label: Joi.string().trim().max(50).allow('').optional().messages({
       'string.max': 'Label is too long (max 50 characters)',
     }),
-    street: Joi.string().trim().min(5).max(200).optional().messages({
-      'string.min': 'Street address must be at least 5 characters',
-      'string.max': 'Street address is too long (max 200 characters)',
+    area: Joi.string().trim().optional().messages({
+      'string.base': 'Area must be a string',
     }),
-    apartment: Joi.string().trim().max(100).allow('').optional().messages({
-      'string.max': 'Apartment info is too long (max 100 characters)',
-    }),
-    city: Joi.string().trim().min(2).max(50).pattern(/^[a-zA-Z\s]+$/).optional().messages({
-      'string.min': 'City name must be at least 2 characters',
-      'string.max': 'City name is too long (max 50 characters)',
-      'string.pattern.base': 'City name should only contain letters',
-    }),
-    state: Joi.string().trim().min(2).max(50).pattern(/^[a-zA-Z\s]+$/).optional().messages({
-      'string.min': 'State name must be at least 2 characters',
-      'string.max': 'State name is too long (max 50 characters)',
-      'string.pattern.base': 'State name should only contain letters',
-    }),
-    zipCode: Joi.string().pattern(/^\d{6}$/).optional().messages({
-      'string.pattern.base': 'Zip code must be exactly 6 digits',
-    }),
-    landmark: Joi.string().trim().max(100).allow('').optional().messages({
-      'string.max': 'Landmark is too long (max 100 characters)',
+    addressLine: Joi.string().trim().min(5).max(300).optional().messages({
+      'string.min': 'Address details must be at least 5 characters',
+      'string.max': 'Address details are too long (max 300 characters)',
     }),
     isDefault: Joi.boolean().optional(),
   });

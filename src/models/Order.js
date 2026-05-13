@@ -221,12 +221,8 @@ const orderSchema = new mongoose.Schema(
 
     // Delivery Information
     deliveryAddress: {
-      street: String,
-      apartment: String,
-      city: String,
-      state: String,
-      zipCode: String,
-      landmark: String,
+      area: String,
+      addressLine: String,
       coordinates: {
         type: {
           type: String,
