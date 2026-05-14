@@ -19,6 +19,7 @@ const addressSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Address details are required'],
   },
+  landmark: String,
   coordinates: {
     type: {
       type: String,

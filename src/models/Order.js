@@ -206,6 +206,7 @@ const orderSchema = new mongoose.Schema(
     deliveryAddress: {
       area: String,
       addressLine: String,
+      landmark: String,
       coordinates: {
         type: {
           type: String,

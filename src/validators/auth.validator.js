@@ -80,22 +80,14 @@ exports.registerSchema = Joi.object({
         label: Joi.string().trim().max(50).messages({
           'string.max': 'Address label cannot exceed 50 characters',
         }),
-        street: Joi.string().trim().required().messages({
-          'string.empty': 'Street address is required',
+        area: Joi.string().trim().required().messages({
+          'string.empty': 'Area is required',
         }),
-        city: Joi.string().trim().required().messages({
-          'string.empty': 'City is required',
+        addressLine: Joi.string().trim().min(5).max(300).required().messages({
+          'string.empty': 'Address details are required',
+          'string.min': 'Address details must be at least 5 characters',
+          'string.max': 'Address details are too long (max 300 characters)',
         }),
-        state: Joi.string().trim().required().messages({
-          'string.empty': 'State is required',
-        }),
-        zipCode: Joi.string()
-          .pattern(/^\d{6}$/)
-          .required()
-          .messages({
-            'string.empty': 'Zip code is required',
-            'string.pattern.base': 'Please provide a valid 6-digit zipCode',
-          }),
         coordinates: Joi.object({
           type: Joi.string().valid('Point').default('Point'),
           coordinates: Joi.array()
@@ -236,22 +228,13 @@ exports.updateProfileSchema = Joi.object({
         label: Joi.string().trim().max(50).messages({
           'string.max': 'Address label cannot exceed 50 characters',
         }),
-        street: Joi.string().trim().required().messages({
-          'string.empty': 'Street address is required',
+        area: Joi.string().trim().optional().messages({
+          'string.base': 'Area must be a string',
         }),
-        city: Joi.string().trim().required().messages({
-          'string.empty': 'City is required',
+        addressLine: Joi.string().trim().min(5).max(300).optional().messages({
+          'string.min': 'Address details must be at least 5 characters',
+          'string.max': 'Address details are too long (max 300 characters)',
         }),
-        state: Joi.string().trim().required().messages({
-          'string.empty': 'State is required',
-        }),
-        zipCode: Joi.string()
-          .pattern(/^\d{6}$/)
-          .required()
-          .messages({
-            'string.empty': 'Zip code is required',
-            'string.pattern.base': 'Please provide a valid 6-digit zipCode',
-          }),
         coordinates: Joi.object({
           type: Joi.string().valid('Point').default('Point'),
           coordinates: Joi.array()

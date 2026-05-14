@@ -851,12 +851,8 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
   let formattedDeliveryAddress = undefined;
   if (orderType === 'DELIVERY' && deliveryAddress) {
     formattedDeliveryAddress = {
-      street: deliveryAddress.street,
-      apartment: deliveryAddress.apartment || '',
-      city: deliveryAddress.city,
-      state: deliveryAddress.state,
-      zipCode: deliveryAddress.zipCode,
-      landmark: deliveryAddress.landmark || '',
+      area: deliveryAddress.area,
+      addressLine: deliveryAddress.addressLine,
       coordinates: {
         type: 'Point',
         coordinates: [0, 0], // Guest orders won't have GPS coordinates from website
@@ -1162,10 +1158,8 @@ exports.getTodayOrders = catchAsync(async (req, res, next) => {
       date: order.createdAt.toISOString().split('T')[0],
       time: order.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }),
       address: {
-        street: order.deliveryAddress?.street || '',
-        city: order.deliveryAddress?.city || '',
-        state: order.deliveryAddress?.state || '',
-        zip: order.deliveryAddress?.zip || order.deliveryAddress?.postalCode || ''
+        area: order.deliveryAddress?.area || '',
+        addressLine: order.deliveryAddress?.addressLine || '',
       }
     };
   });
