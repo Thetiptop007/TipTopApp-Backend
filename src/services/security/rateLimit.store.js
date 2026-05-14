@@ -42,6 +42,10 @@ class RateLimitStore {
         }
       }
     }, 5 * 60 * 1000);
+    
+    if (this.memoryCleanupInterval.unref) {
+      this.memoryCleanupInterval.unref();
+    }
   }
 
   shutdown() {

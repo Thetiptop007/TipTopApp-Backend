@@ -19,6 +19,9 @@ class InMemoryCache {
     
     // Cleanup old entries every 5 minutes to prevent memory leaks
     this.cleanupInterval = setInterval(() => this.cleanup(), 5 * 60 * 1000);
+    if (this.cleanupInterval.unref) {
+      this.cleanupInterval.unref();
+    }
     logger.system('CACHE_INIT', 'In-memory cache initialized');
   }
 

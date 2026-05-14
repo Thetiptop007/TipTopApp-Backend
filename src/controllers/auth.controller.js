@@ -279,6 +279,7 @@ const createSendToken = async (user, statusCode, req, res, message = 'Success') 
     sessionId,
   }, 'info', 'medium');
 
+  const expiresAt = getSessionExpiry();
   buildAuthResponse({
     user,
     message,
@@ -287,6 +288,7 @@ const createSendToken = async (user, statusCode, req, res, message = 'Success') 
     accessToken,
     sessionId,
     res,
+    expiresAt,
   });
 };
 
