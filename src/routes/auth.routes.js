@@ -98,7 +98,6 @@ router.post(
   validateSingleSessionScope('admin'),
   refreshLimiter,
   refreshTokenRateLimit({ windowMs: 15 * 60000, maxRefreshes: 30 }),
-  requireCsrf('admin'),
   authController.refreshToken
 );
 
@@ -125,7 +124,37 @@ router.patch(
   authController.changePassword
 );
 
+const mountSessionRoutes = (scope) => {
+  router.get(
+    `/${scope}/sessions`,
+    authMiddleware.protect(scope),
+    authController.getSessions
+  );
+
+  router.post(
+    `/${scope}/sessions/revoke-otp`,
+    authMiddleware.protect(scope),
+    requireCsrf(scope),
+    authController.requestRevocationOtp
+  );
+
+  router.delete(
+    `/${scope}/sessions/other`,
+    authMiddleware.protect(scope),
+    requireCsrf(scope),
+    authController.revokeAllOtherSessions
+  );
+
+  router.delete(
+    `/${scope}/sessions/:sessionId`,
+    authMiddleware.protect(scope),
+    requireCsrf(scope),
+    authController.revokeSession
+  );
+};
+
 mountDeviceTokenRoutes('admin');
+mountSessionRoutes('admin');
 
 /* =====================================================
    CUSTOMER AUTH ROUTES
@@ -150,7 +179,6 @@ router.post(
   validateSingleSessionScope('customer'),
   refreshLimiter,
   refreshTokenRateLimit({ windowMs: 15 * 60000, maxRefreshes: 30 }),
-  requireCsrf('customer'),
   authController.refreshToken
 );
 
@@ -194,6 +222,7 @@ router.get('/customer/verify-email/:token', authController.verifyEmail);
 router.post('/customer/send-verification-email', authMiddleware.protect('customer'), authController.sendVerificationEmail);
 
 mountDeviceTokenRoutes('customer');
+mountSessionRoutes('customer');
 
 /* =====================================================
    LEGACY COMPATIBILITY ROUTES

@@ -169,6 +169,64 @@ class EmailService {
       return false;
     }
   }
+
+  /**
+   * Send session revocation OTP
+   */
+  async sendSessionRevocationOtp(email, otp, context = {}) {
+    if (!this.enabled) {
+      logger.system('EMAIL_SERVICE_DISABLED', 'Email service disabled; cannot send OTP', {}, { level: 'warn', severity: 'medium' });
+      return false;
+    }
+    
+    try {
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Session Revocation OTP</title>
+        </head>
+        <body style="font-family: Arial, sans-serif; padding: 20px; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; border: 1px solid #e1e4e8; border-radius: 12px; overflow: hidden;">
+            <div style="background-color: #3C50E0; padding: 30px; text-align: center;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 24px;">Security Verification</h1>
+            </div>
+            <div style="padding: 30px;">
+              <p>Hello,</p>
+              <p>A request was made to revoke an active session from your account. Please use the following One-Time Password (OTP) to confirm this action:</p>
+              <div style="background-color: #f6f8fa; padding: 20px; font-size: 32px; font-weight: bold; text-align: center; border-radius: 8px; letter-spacing: 5px; color: #3C50E0; margin: 20px 0;">
+                ${otp}
+              </div>
+              <p><strong>This OTP is valid for 5 minutes.</strong></p>
+              <p>If you did not request this action, please ignore this email or contact support if you believe your account security is compromised.</p>
+              
+              <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e1e4e8;">
+                <p style="font-size: 13px; color: #666; margin: 5px 0;"><strong>Device info:</strong> ${context.userAgent || 'Unknown'}</p>
+                <p style="font-size: 13px; color: #666; margin: 5px 0;"><strong>IP Address:</strong> ${context.ipAddress || 'Unknown'}</p>
+              </div>
+            </div>
+            <div style="background-color: #f6f8fa; padding: 20px; text-align: center; color: #999; font-size: 12px;">
+              &copy; ${new Date().getFullYear()} ThéTipTop Restaurant. All rights reserved.
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      await this.client.emails.send({
+        from: `${this.fromName} <${this.fromEmail}>`,
+        to: [email],
+        subject: `Your Security OTP: ${otp}`,
+        html: htmlContent,
+      });
+
+      return true;
+    } catch (error) {
+      logger.error('Failed to send session revocation OTP', { errorMessage: error.message });
+      return false;
+    }
+  }
 }
 
 module.exports = new EmailService();

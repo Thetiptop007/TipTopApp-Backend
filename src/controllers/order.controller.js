@@ -953,8 +953,8 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     return next(new AppError('Failed to create order - please try again', 500));
   }
 
-  // Validate order number format
-  const orderNumberPattern = /^ORD-\d{6,}$/;
+  // Validate order number format - supports legacy ORD-XXXXXX and new ORD-YYMMDD-XXX
+  const orderNumberPattern = /^ORD-(\d{6,}|\d{6}-\d{3,})$/;
   const isValidFormat = orderNumberPattern.test(order.orderNumber);
   logger.business('ORDER_NUMBER_VALIDATION', 'Validating order number', { orderNumber: order.orderNumber, isValidFormat }, { level: 'debug' });
   

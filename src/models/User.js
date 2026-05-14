@@ -193,9 +193,9 @@ const userSchema = new mongoose.Schema(
     emailVerificationToken: String,
     emailVerificationExpires: Date,
 
-    // Refresh token sessions (one active session per scope)
+    // Refresh token sessions (Multiple active sessions supported)
     authSessions: {
-      admin: {
+      admin: [{
         sessionId: String,
         previousSessionId: String,
         rotatedAt: Date,
@@ -204,11 +204,14 @@ const userSchema = new mongoose.Schema(
         refreshTokenHash: String,
         previousRefreshTokenHash: String,
         tokenHash: String,
+        ipAddress: String,
+        userAgent: String,
+        deviceName: String,
         issuedAt: Date,
         expiresAt: Date,
         lastUsedAt: Date,
-      },
-      customer: {
+      }],
+      customer: [{
         sessionId: String,
         previousSessionId: String,
         rotatedAt: Date,
@@ -217,11 +220,18 @@ const userSchema = new mongoose.Schema(
         refreshTokenHash: String,
         previousRefreshTokenHash: String,
         tokenHash: String,
+        ipAddress: String,
+        userAgent: String,
+        deviceName: String,
         issuedAt: Date,
         expiresAt: Date,
         lastUsedAt: Date,
-      },
+      }],
     },
+    
+    // Session Management Security
+    sessionRevocationOtp: String,
+    sessionRevocationOtpExpires: Date,
 
     // Push Notification Tokens (FCM)
     deviceTokens: [
@@ -368,7 +378,7 @@ userSchema.set('toJSON', {
     // Also keep the original structure
     ret.firstName = doc.name.first;
     ret.lastName = doc.name.last;
-    
+
     // Simplify email and phone for frontend
     if (doc.email) {
       ret.email = doc.email.address;
@@ -378,7 +388,7 @@ userSchema.set('toJSON', {
       ret.phone = doc.phone.number;
       ret.phoneVerified = doc.phone.isVerified;
     }
-    
+
     // Clean up
     delete ret.fullName;
     delete ret.id; // Remove duplicate id field (we have _id)
@@ -441,10 +451,7 @@ const parseJwtExpirySeconds = (rawValue) => {
   return raw;
 };
 
-userSchema.methods.generateAuthToken = function (scope = this.getRefreshScope()) {
-  const session = this.authSessions?.[scope] || null;
-  const sid = session?.sessionId || null;
-
+userSchema.methods.generateAuthToken = function (scope = this.getRefreshScope(), sid = null) {
   const sv = this.sessionVersion || 0;
 
   return jwt.sign({ sub: this._id.toString(), role: this.role, type: 'access', sid, sv, v: 1 }, process.env.JWT_SECRET, {
@@ -453,10 +460,7 @@ userSchema.methods.generateAuthToken = function (scope = this.getRefreshScope())
 };
 
 // Generate refresh token
-userSchema.methods.generateRefreshToken = function (scope = this.getRefreshScope()) {
-  const session = this.authSessions?.[scope] || null;
-  const sid = session?.sessionId || null;
-
+userSchema.methods.generateRefreshToken = function (scope = this.getRefreshScope(), sid = null) {
   const sv = this.sessionVersion || 0;
 
   return jwt.sign({ sub: this._id.toString(), role: this.role, type: 'refresh', sid, sv, v: 1 }, process.env.JWT_REFRESH_SECRET, {
@@ -488,7 +492,7 @@ const parseDurationToMs = (value, fallbackMs) => {
   return amount * unitMs[unit];
 };
 
-userSchema.methods.storeAuthSession = async function (scope, { accessToken, refreshToken, sessionId, previousSession = null } = {}) {
+userSchema.methods.storeAuthSession = async function (scope, { accessToken, refreshToken, sessionId, ipAddress, userAgent, deviceName, previousSession = null } = {}) {
   if (!scope || !['admin', 'customer'].includes(scope)) {
     throw new Error('Invalid session scope');
   }
@@ -499,12 +503,14 @@ userSchema.methods.storeAuthSession = async function (scope, { accessToken, refr
 
   const nextSessionId = sessionId || crypto.randomUUID();
   const accessTokenHash = crypto.createHash('sha256').update(accessToken).digest('hex');
-  const refreshTokenHash = await bcrypt.hash(refreshToken, 12); // Keep Bcrypt for long-lived refresh tokens
+  const refreshTokenHash = await bcrypt.hash(refreshToken, 12);
   const expiresIn = String(process.env.JWT_REFRESH_EXPIRE || '7d').trim();
   const expiresAt = new Date(Date.now() + parseDurationToMs(expiresIn, 7 * 24 * 60 * 60 * 1000));
 
   this.authSessions = this.authSessions || {};
-  this.authSessions[scope] = {
+  this.authSessions[scope] = this.authSessions[scope] || [];
+
+  const sessionData = {
     sessionId: nextSessionId,
     previousSessionId: previousSession?.sessionId || null,
     rotatedAt: previousSession?.sessionId ? new Date() : null,
@@ -513,13 +519,33 @@ userSchema.methods.storeAuthSession = async function (scope, { accessToken, refr
     refreshTokenHash,
     previousRefreshTokenHash: previousSession?.refreshTokenHash || null,
     tokenHash: refreshTokenHash,
+    ipAddress: ipAddress || null,
+    userAgent: userAgent || null,
+    deviceName: deviceName || null,
     issuedAt: new Date(),
     expiresAt,
     lastUsedAt: new Date(),
   };
 
+  // If previousSession provided, find and replace it
+  const existingIndex = previousSession 
+    ? this.authSessions[scope].findIndex(s => s.sessionId === previousSession.sessionId)
+    : -1;
+
+  if (existingIndex !== -1) {
+    this.authSessions[scope][existingIndex] = sessionData;
+  } else {
+    // Add new session and enforce limit (max 10 per scope)
+    this.authSessions[scope].push(sessionData);
+    if (this.authSessions[scope].length > 10) {
+      // Remove oldest session by lastUsedAt
+      this.authSessions[scope].sort((a, b) => (a.lastUsedAt || 0) - (b.lastUsedAt || 0));
+      this.authSessions[scope].shift();
+    }
+  }
+
   await this.save({ validateBeforeSave: false });
-  return this.authSessions[scope];
+  return sessionData;
 };
 
 userSchema.methods.storeRefreshSession = async function (scope, refreshToken) {
@@ -533,22 +559,36 @@ userSchema.methods.storeRefreshSession = async function (scope, refreshToken) {
   });
 };
 
-userSchema.methods.revokeRefreshSession = async function (scope) {
-  if (this.authSessions && this.authSessions[scope]) {
-    delete this.authSessions[scope];
-    await this.save({ validateBeforeSave: false });
-    invalidateAuthSessionCache(this._id, scope);
+userSchema.methods.revokeRefreshSession = async function (scope, sessionId = null) {
+  if (!this.authSessions || !this.authSessions[scope]) return;
+
+  const sessionsRaw = this.authSessions[scope];
+  const sessions = Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : []);
+
+  if (sessionId) {
+    this.authSessions[scope] = sessions.filter(s => s.sessionId !== sessionId);
+  } else {
+    // If no sessionId, clear all (legacy behavior or full logout)
+    this.authSessions[scope] = [];
   }
+
+  await this.save({ validateBeforeSave: false });
+  invalidateAuthSessionCache(this._id, scope);
 };
 
 userSchema.methods.verifyAccessSession = async function (scope, { accessToken, sessionId } = {}) {
-  const session = this.authSessions?.[scope];
-  if (!session || !session.accessTokenHash || !session.sessionId) {
-    return { valid: false, reason: 'missing_session' };
-  }
-
+  const sessionsRaw = this.authSessions?.[scope];
+  const sessions = Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : []);
+  
   if (!accessToken || !sessionId) {
     return { valid: false, reason: 'missing_token_or_session_id' };
+  }
+
+  // Find the specific session
+  const session = sessions.find(s => s.sessionId === sessionId || s.previousSessionId === sessionId);
+  
+  if (!session || !session.accessTokenHash) {
+    return { valid: false, reason: 'session_not_found' };
   }
 
   const rotationState = getRotationState(session, sessionId);
@@ -560,15 +600,13 @@ userSchema.methods.verifyAccessSession = async function (scope, { accessToken, s
     return { valid: false, reason: 'session_expired' };
   }
 
-  // Check match based on hashing algorithm (handle legacy bcrypt transition)
+  // Check match based on hashing algorithm
   const checkTokenMatch = async (token, storedHash) => {
     if (!storedHash) return false;
-    // SHA-256 hex is 64 chars
     if (storedHash.length === 64 && !storedHash.startsWith('$2')) {
       const hash = crypto.createHash('sha256').update(token).digest('hex');
       return hash === storedHash;
     }
-    // Fallback to legacy Bcrypt
     return await bcrypt.compare(token, storedHash);
   };
 
@@ -578,24 +616,33 @@ userSchema.methods.verifyAccessSession = async function (scope, { accessToken, s
       return { valid: false, reason: 'access_token_mismatch' };
     }
   } else if (rotationState.previous) {
-    // Grace window: allow old token with previous sessionId
     const matches = await checkTokenMatch(accessToken, session.previousAccessTokenHash);
     if (!matches) {
       return { valid: false, reason: 'access_token_mismatch_prev' };
     }
   }
 
-  return { valid: true, session: this.authSessions[scope] };
+  // Update lastUsedAt if more than 1 minute since last update to avoid excessive writes
+  if (!session.lastUsedAt || Date.now() - new Date(session.lastUsedAt).getTime() > 60000) {
+    session.lastUsedAt = new Date();
+    this.save({ validateBeforeSave: false }).catch(() => {}); // fire and forget
+  }
+
+  return { valid: true, session };
 };
 
 userSchema.methods.verifyRefreshSession = async function (scope, refreshToken, sessionId = null) {
-  const session = this.authSessions?.[scope];
-  if (!session || !session.refreshTokenHash || !session.sessionId) {
-    return { valid: false, reason: 'missing_session' };
-  }
-
+  const sessionsRaw = this.authSessions?.[scope];
+  const sessions = Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : []);
+  
   if (!refreshToken) {
     return { valid: false, reason: 'missing_refresh_token' };
+  }
+
+  const session = sessions.find(s => s.sessionId === sessionId || s.previousSessionId === sessionId);
+  
+  if (!session || !session.refreshTokenHash) {
+    return { valid: false, reason: 'session_not_found' };
   }
 
   const rotationState = getRotationState(session, sessionId);
@@ -607,19 +654,16 @@ userSchema.methods.verifyRefreshSession = async function (scope, refreshToken, s
     return { valid: false, reason: 'session_expired' };
   }
 
-  // Never accept old refresh token, even during grace window. Only current refresh token is valid.
-  // (Old access token can be accepted during grace window for client error recovery)
   if (rotationState.current) {
     const isValid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
     if (!isValid) {
       return { valid: false, reason: 'refresh_token_mismatch' };
     }
   } else {
-    // rotationState.previous is true but we never accept old refresh token
     return { valid: false, reason: 'refresh_token_mismatch' };
   }
 
-  return { valid: true, session: this.authSessions[scope] };
+  return { valid: true, session };
 };
 
 userSchema.methods.normalizeRoleFromLegacy = async function () {
@@ -676,7 +720,7 @@ userSchema.methods.updateLastLogin = async function () {
 userSchema.methods.addDeviceToken = async function (token, platform, deviceId) {
   // Check if token already exists
   const existingToken = this.deviceTokens.find(dt => dt.token === token);
-  
+
   if (existingToken) {
     // Update existing token
     existingToken.lastUsed = new Date();
@@ -693,7 +737,7 @@ userSchema.methods.addDeviceToken = async function (token, platform, deviceId) {
       isActive: true,
     });
   }
-  
+
   await this.save({ validateBeforeSave: false });
 };
 

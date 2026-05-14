@@ -253,19 +253,20 @@ const createSendToken = async (user, statusCode, req, res, message = 'Success') 
   clearOtherRoleCookies(req, res, scope);
   
   const sessionId = crypto.randomUUID();
-  user.authSessions = user.authSessions || {};
-  user.authSessions[scope] = {
-    ...(user.authSessions[scope] || {}),
+  const ipAddress = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const userAgent = req.headers['user-agent'];
+
+  const accessToken = user.generateAuthToken(scope, sessionId);
+  const refreshToken = user.generateRefreshToken(scope, sessionId);
+
+  await user.storeAuthSession(scope, { 
+    accessToken, 
+    refreshToken, 
     sessionId,
-    issuedAt: new Date(),
-    expiresAt: getSessionExpiry(),
-    lastUsedAt: new Date(),
-  };
+    ipAddress,
+    userAgent
+  });
 
-  const accessToken = user.generateAuthToken(scope);
-  const refreshToken = user.generateRefreshToken(scope);
-
-  await user.storeAuthSession(scope, { accessToken, refreshToken, sessionId });
   // Update last login
   await user.updateLastLogin();
   setRefreshCookie(res, scope, refreshToken);
@@ -276,7 +277,6 @@ const createSendToken = async (user, statusCode, req, res, message = 'Success') 
     role: user.role,
     scope,
     sessionId,
-    expiresAt: user.authSessions?.[scope]?.expiresAt || null,
   }, 'info', 'medium');
 
   buildAuthResponse({
@@ -285,7 +285,6 @@ const createSendToken = async (user, statusCode, req, res, message = 'Success') 
     statusCode,
     scope,
     accessToken,
-    expiresAt: user.authSessions?.[scope]?.expiresAt || null,
     sessionId,
     res,
   });
@@ -806,53 +805,44 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
 
   const sessionCheck = await user.verifyRefreshSession(scope, refreshToken, tokenSessionId);
   if (!sessionCheck.valid) {
-    await user.revokeRefreshSession(scope);
+    // If it's a mismatch but we have a sessionId, only revoke that one session
+    if (sessionCheck.reason === 'session_id_mismatch' || sessionCheck.reason === 'session_not_found') {
+      await user.revokeRefreshSession(scope, tokenSessionId);
+    } else {
+      await user.revokeRefreshSession(scope); // Revoke all if it's a bigger issue
+    }
+    
     clearRefreshCookie(res, scope);
     clearCsrfCookie(res, scope);
     clearSessionCache(user._id, scope);
+    
     logAuthEvent('AUTH_REFRESH_DENIED', {
       reason: sessionCheck.reason || 'refresh_session_validation_failed',
       userId: user._id.toString(),
       scope,
       sessionId: tokenSessionId,
     }, 'warn', 'high');
-    try {
-      incrementRefreshOutcome(scope, 'denied');
-      if (sessionCheck.reason && (sessionCheck.reason.includes('mismatch') || sessionCheck.reason.includes('missing'))) {
-        incrementRefreshReplayDenied(scope);
-      }
-    } catch (e) {}
+    
     return next(new AppError('Invalid refresh token.', 401));
   }
 
   // Generate new access token
-  // Capture previous session BEFORE mutating current one
-  const previousSession = user.authSessions?.[scope]
-    ? {
-        sessionId: user.authSessions[scope].sessionId,
-        accessTokenHash: user.authSessions[scope].accessTokenHash,
-        refreshTokenHash: user.authSessions[scope].refreshTokenHash,
-      }
-    : null;
-
+  const previousSession = sessionCheck.session;
   const nextSessionId = crypto.randomUUID();
-  user.authSessions = user.authSessions || {};
-  user.authSessions[scope] = {
-    ...(user.authSessions[scope] || {}),
-    sessionId: nextSessionId,
-    issuedAt: new Date(),
-    expiresAt: getSessionExpiry(),
-    lastUsedAt: new Date(),
-  };
+  
+  const ipAddress = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const userAgent = req.headers['user-agent'];
 
-  const newAccessToken = user.generateAuthToken(scope);
-  const newRefreshToken = user.generateRefreshToken(scope);
+  const newAccessToken = user.generateAuthToken(scope, nextSessionId);
+  const newRefreshToken = user.generateRefreshToken(scope, nextSessionId);
 
   await user.storeAuthSession(scope, {
     accessToken: newAccessToken,
     refreshToken: newRefreshToken,
     sessionId: nextSessionId,
     previousSession,
+    ipAddress,
+    userAgent
   });
   
   // Clear other scope cookies during refresh too if they exist
@@ -867,18 +857,14 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
     role: user.role,
     scope,
   });
+  
   logAuthEvent('AUTH_REFRESH_SUCCESS', {
     userId: user._id.toString(),
     role: user.role,
     scope,
     sessionId: nextSessionId,
     previousSessionId: tokenSessionId,
-    expiresAt: user.authSessions?.[scope]?.expiresAt || null,
   }, 'info', 'medium');
-
-  try {
-    incrementRefreshOutcome(scope, 'success');
-  } catch (e) {}
 
   res.status(200).json({
     status: 'success',
@@ -887,7 +873,6 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
       user: serializeAuthUser(user),
       role: user.role,
       authenticated: true,
-      expiresAt: user.authSessions?.[scope]?.expiresAt || null,
       authVersion: AUTH_VERSION,
       tokens: {
         accessToken: newAccessToken,
@@ -896,6 +881,161 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
       },
       csrfToken,
     },
+  });
+});
+
+/**
+ * Get active sessions for current user
+ * GET /api/v1/auth/sessions
+ */
+exports.getSessions = catchAsync(async (req, res, next) => {
+  const scope = getAuthScope(req, req.user);
+  const currentSessionId = req.auth?.sessionId;
+  
+  const sessionsRaw = req.user.authSessions?.[scope];
+  const sessionsList = Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : []);
+  
+  const sessions = sessionsList.map(s => ({
+    sessionId: s.sessionId,
+    ipAddress: s.ipAddress,
+    userAgent: s.userAgent,
+    issuedAt: s.issuedAt,
+    lastUsedAt: s.lastUsedAt,
+    isCurrent: s.sessionId === currentSessionId || s.previousSessionId === currentSessionId,
+  }));
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      sessions: sessions.sort((a, b) => new Date(b.lastUsedAt) - new Date(a.lastUsedAt)),
+    },
+  });
+});
+
+/**
+ * Request OTP for session revocation
+ * POST /api/v1/auth/:role/sessions/revoke-otp
+ */
+exports.requestRevocationOtp = catchAsync(async (req, res, next) => {
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const expires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+  req.user.sessionRevocationOtp = otp;
+  req.user.sessionRevocationOtpExpires = expires;
+  await req.user.save({ validateBeforeSave: false });
+
+  // Invalidate session cache for this user/scope to ensure next request (revocation) loads the updated user object with OTP
+  const sessionCache = require('../services/sessionCache');
+  const scope = getAuthScope(req, req.user);
+  const cacheKey = `${req.user._id.toString()}-${scope}`;
+  sessionCache.delete(cacheKey);
+
+  logger.debug('REVOCATION_OTP_ISSUED', { userId: req.user._id, scope, otp: isProduction ? '***' : otp });
+
+  const emailService = require('../services/email.service');
+  // Use the specific email requested by the user
+  const targetEmail = process.env.REVOCATION_OTP_EMAIL || 'naitikkumar2408@gmail.com';
+
+  await emailService.sendSessionRevocationOtp(targetEmail, otp, {
+    userAgent: req.headers['user-agent'],
+    ipAddress: req.ip,
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: `OTP sent to ${targetEmail.replace(/(.{2})(.*)(?=@)/, '$1***')}`,
+  });
+});
+
+/**
+ * Revoke a specific session
+ * DELETE /api/v1/auth/sessions/:sessionId
+ */
+exports.revokeSession = catchAsync(async (req, res, next) => {
+  const { sessionId } = req.params;
+  const otp = req.body.otp || req.headers['x-revocation-otp'];
+  const scope = getAuthScope(req, req.user);
+
+  if (!sessionId) {
+    return next(new AppError('Session ID is required', 400));
+  }
+
+  if (!otp) {
+    return next(new AppError('OTP is required for session revocation', 400));
+  }
+
+  const storedOtp = req.user.sessionRevocationOtp;
+  const otpExpires = req.user.sessionRevocationOtpExpires;
+
+  if (!storedOtp || storedOtp !== String(otp).trim() || !otpExpires || otpExpires < Date.now()) {
+    logger.warn('REVOCATION_OTP_FAILED', { 
+      userId: req.user._id, 
+      scope, 
+      provided: otp, 
+      stored: isProduction ? '***' : storedOtp,
+      expired: otpExpires ? otpExpires < Date.now() : 'no_expiry'
+    });
+    return next(new AppError('Invalid or expired OTP', 400));
+  }
+
+  // Clear OTP after use - will be saved by revokeRefreshSession below
+  req.user.sessionRevocationOtp = undefined;
+  req.user.sessionRevocationOtpExpires = undefined;
+
+  await req.user.revokeRefreshSession(scope, sessionId);
+
+  logAuthEvent('AUTH_SESSION_REVOKED_MANUALLY', {
+    userId: req.user._id.toString(),
+    sessionId,
+    actorId: req.user._id.toString(),
+  }, 'info', 'medium');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Session revoked successfully.',
+  });
+});
+
+/**
+ * Revoke all other sessions
+ * DELETE /api/v1/auth/sessions/other
+ */
+exports.revokeAllOtherSessions = catchAsync(async (req, res, next) => {
+  const scope = getAuthScope(req, req.user);
+  const currentSessionId = req.auth?.sessionId;
+  const otp = req.body.otp || req.headers['x-revocation-otp'];
+
+  if (!currentSessionId) {
+    return next(new AppError('Current session not identified', 401));
+  }
+
+  if (!otp) {
+    return next(new AppError('OTP is required for session revocation', 400));
+  }
+
+  if (!req.user.sessionRevocationOtp || req.user.sessionRevocationOtp !== otp || req.user.sessionRevocationOtpExpires < Date.now()) {
+    return next(new AppError('Invalid or expired OTP', 400));
+  }
+
+  // Clear OTP after use - will be saved by req.user.save below
+  req.user.sessionRevocationOtp = undefined;
+  req.user.sessionRevocationOtpExpires = undefined;
+  
+  if (req.user.authSessions?.[scope]) {
+    req.user.authSessions[scope] = req.user.authSessions[scope].filter(
+      s => s.sessionId === currentSessionId || s.previousSessionId === currentSessionId
+    );
+  }
+  await req.user.save({ validateBeforeSave: false });
+
+  logAuthEvent('AUTH_OTHER_SESSIONS_REVOKED', {
+    userId: req.user._id.toString(),
+    currentSessionId,
+  }, 'info', 'medium');
+
+  res.status(200).json({
+    status: 'success',
+    message: 'All other sessions revoked successfully.',
   });
 });
 

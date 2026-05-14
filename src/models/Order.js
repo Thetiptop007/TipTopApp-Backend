@@ -22,28 +22,14 @@ const getMaxExistingOrderSequence = async () => {
 };
 
 const getNextOrderSequence = async () => {
+  const now = new Date();
+  // Use Indian Standard Time (IST) for date-based sequence reset
+  // Phagwara, Punjab is in IST (UTC+5:30)
+  const dateStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); // YYYY-MM-DD format
   const countersCollection = mongoose.connection.collection('counters');
-  const counterId = ORDER_COUNTER_ID;
-
-  const existingCounter = await countersCollection.findOne({ _id: counterId });
-
-  if (!existingCounter) {
-    const maxExistingSeq = await getMaxExistingOrderSequence();
-
-    try {
-      await countersCollection.insertOne({
-        _id: counterId,
-        seq: maxExistingSeq,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-    } catch (error) {
-      // If another request initialized it first, continue with atomic increment.
-      if (error.code !== 11000) {
-        throw error;
-      }
-    }
-  }
+  
+  // Use a date-specific counter ID to reset daily
+  const counterId = `${ORDER_COUNTER_ID}_${dateStr}`;
 
   const counter = await countersCollection.findOneAndUpdate(
     { _id: counterId },
@@ -55,16 +41,13 @@ const getNextOrderSequence = async () => {
     { returnDocument: 'after', upsert: true }
   );
 
-  // Driver compatibility:
-  // - Some versions return { value: {...} }
-  // - Newer versions return the document directly
   const nextSeq = counter?.value?.seq ?? counter?.seq;
 
   if (typeof nextSeq !== 'number') {
     throw new Error('Failed to generate order sequence from counter');
   }
 
-  return nextSeq;
+  return { seq: nextSeq, dateStr };
 };
 
 // Customization Sub-schema
@@ -430,8 +413,14 @@ orderSchema.virtual('deliveryTime').get(function () {
 // Generate order number before saving
 orderSchema.pre('save', async function () {
   if (this.isNew && !this.orderNumber) {
-    const nextSequence = await getNextOrderSequence();
-    this.orderNumber = `ORD-${String(nextSequence).padStart(6, '0')}`;
+    const { seq, dateStr } = await getNextOrderSequence();
+    
+    // Format: ORD-YYMMDD-XXX
+    // Example: ORD-240513-001
+    const datePart = dateStr.replace(/-/g, '').slice(2); // YYMMDD
+    const seqPart = String(seq).padStart(3, '0');
+    
+    this.orderNumber = `ORD-${datePart}-${seqPart}`;
   }
 });
 
