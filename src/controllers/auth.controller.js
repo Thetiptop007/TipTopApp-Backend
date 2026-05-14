@@ -936,7 +936,7 @@ exports.requestRevocationOtp = catchAsync(async (req, res, next) => {
 
   const emailService = require('../services/email.service');
   // Use the specific email requested by the user
-  const targetEmail = process.env.REVOCATION_OTP_EMAIL || 'naitikkumar2408@gmail.com';
+  const targetEmail = process.env.ADMIN_EMAIL || 'thetiptop007@gmail.com';
 
   await emailService.sendSessionRevocationOtp(targetEmail, otp, {
     userAgent: req.headers['user-agent'],
