@@ -126,6 +126,13 @@ router.patch(
   orderController.bulkUpdateOrderStatus
 );
 
+// Admin bulk assign delivery partner (admin only)
+router.post(
+  '/assign-delivery',
+  authMiddleware.restrictTo('admin'),
+  orderController.bulkAssignDeliveryPartner
+);
+
 // Admin mark order as preparing (ACCEPTED → PREPARING)
 router.patch('/:id/preparing', authMiddleware.restrictTo('admin'), deduplicateRequest(3), orderController.markOrderPreparing);
 

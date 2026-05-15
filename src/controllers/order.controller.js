@@ -16,7 +16,10 @@ const emailService = require('../services/email.service');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
 const notificationService = require('../services/notification.service');
-const { bulkUpdateOrderStatus: bulkUpdateOrderStatusService } = require('../services/order-bulk.service');
+const { 
+  bulkUpdateOrderStatus: bulkUpdateOrderStatusService,
+  bulkAssignDeliveryPartner: bulkAssignDeliveryPartnerService 
+} = require('../services/order-bulk.service');
 const {
   updateOrderStatus: applyOrderStatusUpdate,
 } = require('../services/order.service');
@@ -635,6 +638,61 @@ exports.bulkUpdateOrderStatus = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     message: 'Bulk order status update processed',
+    data: result,
+  });
+});
+
+exports.bulkAssignDeliveryPartner = catchAsync(async (req, res, next) => {
+  const { orderIds, partnerId } = req.body;
+
+  if (!req.user || req.user.role !== 'admin') {
+    return next(new AppError('Only admins can assign delivery partners', 403));
+  }
+
+  const result = await bulkAssignDeliveryPartnerService({
+    orderIds,
+    partnerId,
+    adminUserId: req.user._id,
+  });
+
+  // Send notifications if assignment was successful
+  if (result.modified > 0) {
+    try {
+      const deliveryPartner = await User.findById(partnerId);
+      if (deliveryPartner) {
+        const deliveryTokens = deliveryPartner.getActiveDeviceTokens();
+        if (deliveryTokens && deliveryTokens.length > 0) {
+          for (const token of deliveryTokens) {
+            await notificationService.sendCustomNotification(
+              token,
+              '📦 New Deliveries Assigned!',
+              `You have been assigned ${result.modified} new orders.`,
+              {
+                type: 'BULK_DELIVERY_ASSIGNED',
+                count: result.modified.toString(),
+              }
+            );
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn('[BULK DELIVERY NOTIFICATION] Failed to send push notification:', err.message);
+    }
+  }
+
+  logger.business('ORDER_BULK_DELIVERY_ASSIGN_COMPLETED', 'Bulk delivery partner assignment processed', {
+    adminUserId: req.user._id.toString(),
+    partnerId,
+    requested: result.totalRequested,
+    matched: result.matched,
+    modified: result.modified,
+    skipped: result.skipped,
+    failed: result.failed,
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Bulk delivery partner assignment processed',
     data: result,
   });
 });
