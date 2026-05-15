@@ -690,6 +690,14 @@ exports.bulkAssignDeliveryPartner = catchAsync(async (req, res, next) => {
     failed: result.failed,
   });
 
+  if (result.skipped > 0 || result.failed > 0) {
+    logger.warn('BULK_ASSIGNMENT_PARTIAL_FAILURE', 'Some orders were skipped or failed during bulk assignment', {
+      skipped: result.skipped,
+      failed: result.failed,
+      partnerId
+    });
+  }
+
   res.status(200).json({
     status: 'success',
     message: 'Bulk delivery partner assignment processed',
@@ -776,15 +784,19 @@ exports.cancelOrder = catchAsync(async (req, res, next) => {
 });
 
 exports.createGuestOrder = catchAsync(async (req, res, next) => {
-  const {
-    customer,
-    items,
-    orderType = 'DELIVERY',
-    deliveryAddress,
-    paymentMethod = 'COD',
-    specialInstructions,
-    fcmToken,
-  } = req.body;
+  const { customer, items, orderType, deliveryAddress, paymentMethod, specialInstructions, fcmToken } = req.body;
+
+  logger.debug('GUEST_ORDER_REQUEST', 'Processing guest order request', {
+    customerName: customer?.name,
+    customerPhone: customer?.phone,
+    itemCount: items?.length,
+    orderType,
+  });
+
+  // Normalize phone number (strip +91 or leading 0 for consistency)
+  if (customer && customer.phone) {
+    customer.phone = customer.phone.trim().replace(/^(\+91|0)/, '');
+  }
 
   // Validation handled by validator middleware, but double-check critical fields
   if (!customer || !customer.name || !customer.phone) {
@@ -860,11 +872,23 @@ exports.createGuestOrder = catchAsync(async (req, res, next) => {
     if (item.price) {
       price = item.price;
     } else {
-      const variant = menuItem.priceVariants?.find(v => v.quantity === portion);
+      const variant = menuItem.priceVariants?.find(v => v.quantity.toLowerCase() === portion.toLowerCase());
       price = variant?.price || menuItem.portions?.[portion] || menuItem.basePrice;
     }
 
-    const itemSubtotal = price * item.quantity;
+    const customizationsTotal = 0; // Placeholder for future logic
+    const itemSubtotal = (price + customizationsTotal) * item.quantity;
+    
+    if (isNaN(itemSubtotal)) {
+      logger.error('PRICING_CALCULATION_ERROR', 'NaN detected in item subtotal', { 
+        itemName: menuItem.name, 
+        price, 
+        customizationsTotal, 
+        quantity: item.quantity 
+      });
+      throw new AppError(`Invalid pricing for item: ${menuItem.name}`, 400);
+    }
+
     itemsTotal += itemSubtotal;
 
     return {

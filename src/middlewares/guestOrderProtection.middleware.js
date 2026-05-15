@@ -5,7 +5,7 @@ const isDevelopment = process.env.NODE_ENV === 'development';
 
 const GUEST_LIMIT_WINDOW_MS = Number(process.env.GUEST_ORDER_LIMIT_WINDOW_MS || 60 * 1000);
 const GUEST_LIMIT_MAX = Number(process.env.GUEST_ORDER_LIMIT_MAX || 5);
-const GUEST_COOLDOWN_MS = Number(process.env.GUEST_ORDER_COOLDOWN_MS || 15 * 1000);
+const GUEST_COOLDOWN_MS = Number(process.env.GUEST_ORDER_COOLDOWN_MS || (isDevelopment ? 2000 : 15000));
 
 const deviceCooldownMap = new Map();
 

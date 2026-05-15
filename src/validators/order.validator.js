@@ -310,17 +310,17 @@ exports.validateQuery = (schema) => {
  */
 exports.createGuestOrderSchema = Joi.object({
   customer: Joi.object({
-    name: Joi.string().trim().min(2).max(100).required().messages({
-      'string.empty': 'Customer name is required',
-      'string.min': 'Customer name must be at least 2 characters',
-      'string.max': 'Customer name is too long (max 100 characters)',
+    name: Joi.string().trim().min(2).max(50).required().messages({
+      'string.min': 'Customer name must be at least 2 characters long',
+      'any.required': 'Customer name is required',
     }),
     phone: Joi.string()
-      .pattern(/^[6-9]\d{9}$/)
+      .trim()
+      .pattern(/^(\+91|0)?[6-9]\d{9}$/)
       .required()
       .messages({
-        'string.empty': 'Phone number is required',
-        'string.pattern.base': 'Invalid phone number format',
+        'string.pattern.base': 'Please provide a valid 10-digit phone number',
+        'any.required': 'Phone number is required',
       }),
     email: Joi.string().email().optional().allow('').messages({
       'string.email': 'Invalid email format',
@@ -369,12 +369,11 @@ exports.createGuestOrderSchema = Joi.object({
     is: 'DELIVERY',
     then: Joi.object({
       area: Joi.string().trim().required().messages({
-        'string.empty': 'Area is required',
+        'any.required': 'Area selection is required',
       }),
-      addressLine: Joi.string().trim().min(5).max(300).required().messages({
-        'string.empty': 'Address details are required',
-        'string.min': 'Address details must be at least 5 characters',
-        'string.max': 'Address details are too long (max 300 characters)',
+      addressLine: Joi.string().trim().min(1).max(300).required().messages({
+        'string.min': 'Address must not be empty',
+        'any.required': 'Address line is required',
       }),
     }).required(),
     otherwise: Joi.optional(),
@@ -387,7 +386,7 @@ exports.createGuestOrderSchema = Joi.object({
       'any.only': 'Payment method must be COD or ONLINE',
     }),
 
-  fcmToken: Joi.string().trim().allow('').optional().messages({
+  fcmToken: Joi.string().trim().allow('', null).optional().messages({
     'string.base': 'FCM token must be a string',
   }),
 
