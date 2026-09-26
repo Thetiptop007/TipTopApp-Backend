@@ -113,6 +113,11 @@ exports.createCategory = catchAsync(async (req, res, next) => {
 exports.updateCategory = catchAsync(async (req, res, next) => {
   const { name, description, isActive, color } = req.body;
 
+  // [DEBUG] Log incoming update request
+  console.log('[DEBUG updateCategory] Searching for ID:', req.params.id);
+  const allIds = await Category.find({}, '_id name').lean();
+  console.log('[DEBUG updateCategory] All categories in DB:', allIds.map(c => `${c._id} (${c.name})`));
+
   // If name is being updated, check for duplicates
   if (name) {
     const existingCategory = await Category.findOne({
@@ -125,11 +130,14 @@ exports.updateCategory = catchAsync(async (req, res, next) => {
     }
   }
 
+  // Fixed: use `new: true` (Mongoose option) instead of `returnDocument: 'after'` (MongoDB driver option)
   const category = await Category.findByIdAndUpdate(
     req.params.id,
     { name, description, isActive, color },
-    { returnDocument: 'after', runValidators: true }
+    { new: true, runValidators: true }
   );
+
+  console.log('[DEBUG updateCategory] findByIdAndUpdate result:', category ? category._id : 'null (not found)');
 
   if (!category) {
     return next(new AppError('Category not found', 404));

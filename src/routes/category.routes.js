@@ -28,7 +28,7 @@ router.get(
 );
 
 // Protected routes - Admin only
-router.use(protect);
+router.use(protect('admin'));
 router.use(restrictTo('admin'));
 
 router.post(
