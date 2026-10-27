@@ -241,7 +241,7 @@ exports.getUsersByRole = catchAsync(async (req, res, next) => {
   }
 
   // Don't use limitFields for users - we need all customer data
-  const features = new APIFeatures(User.find({ role }).select('-password -passwordResetToken -passwordResetExpires'), req.query)
+  const features = new APIFeatures(User.find({ role, isActive: { $ne: false } }).select('-password -passwordResetToken -passwordResetExpires'), req.query)
     .search()
     .sort()
     .paginate();
