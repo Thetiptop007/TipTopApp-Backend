@@ -431,7 +431,7 @@ exports.register = catchAsync(async (req, res, next) => {
   // Check if an active user already exists with this email or phone
   const existingUsers = await User.find({
     $or: [{ 'email.address': userEmail }, { 'phone.number': phone }],
-  });
+  }).select('+isActive');
 
   for (const existing of existingUsers) {
     // If the account was soft-deleted (isActive: false), release its credentials so new registration succeeds
