@@ -2,21 +2,13 @@ const logger = require('../utils/logger');
 const { Resend } = require('resend');
 
 /**
- * Email Service for Critical Error Notifications Only
+ * Enterprise Email Service using Resend
  * 
- * This service is configured to send emails ONLY for critical errors.
- * All other email functionality (OTP, order confirmations) has been removed.
- * 
- * Uses Resend.com:
- * - Free tier: 100 emails/day, 3,000/month
- * - Works on all hosting platforms including Render
- * - No SMTP required (REST API based)
- * 
- * Setup:
- * 1. Sign up at https://resend.com (FREE)
- * 2. Get API key from dashboard
- * 3. Add RESEND_API_KEY to .env
- * 4. Add DEVELOPER_EMAIL to receive error notifications
+ * Configured for:
+ * - Critical error notifications
+ * - Customer password reset links / OTPs
+ * - Order confirmation emails
+ * - General transactional messaging
  */
 class EmailService {
   constructor() {
@@ -30,41 +22,186 @@ class EmailService {
 
   initialize() {
     if (!process.env.RESEND_API_KEY) {
-      logger.system('EMAIL_RESEND_API_KEY_MISSING', 'RESEND_API_KEY not configured; critical error emails disabled', {}, { level: 'warn', severity: 'medium' });
-      return;
-    }
-
-    if (!this.developerEmail) {
-      logger.system('EMAIL_DEVELOPER_MISSING', 'DEVELOPER_EMAIL not configured; critical error emails disabled', {}, { level: 'warn', severity: 'medium' });
+      logger.system('EMAIL_RESEND_API_KEY_MISSING', 'RESEND_API_KEY not configured; email service disabled', {}, { level: 'warn', severity: 'medium' });
       return;
     }
 
     try {
       this.client = new Resend(process.env.RESEND_API_KEY);
       this.enabled = true;
+      logger.system('EMAIL_SERVICE_INIT', 'Resend email service initialized successfully', { from: this.fromEmail });
     } catch (error) {
       logger.system('EMAIL_INIT_FAILED', 'Failed to initialize email service', { errorMessage: error.message }, { level: 'error', severity: 'high' });
     }
   }
 
   /**
-   * Send critical error notification to developer
-   * This is the ONLY email functionality in the system
+   * Generic sender with formatting and error resilience
    */
-  async sendErrorNotification(error, context = {}) {
-    if (!this.enabled) {
-      logger.system('EMAIL_SERVICE_DISABLED', 'Email service disabled; cannot send error notification', {}, { level: 'warn', severity: 'medium' });
-      return false;
+  async sendEmail({ to, subject, html, text }) {
+    if (!this.enabled || !this.client) {
+      logger.system('EMAIL_SERVICE_DISABLED', 'Cannot send email: Resend service not initialized', { to, subject }, { level: 'warn', severity: 'medium' });
+      return { success: false, reason: 'disabled' };
     }
 
-    if (!this.developerEmail) {
-      logger.system('EMAIL_DEVELOPER_MISSING_SKIP', 'DEVELOPER_EMAIL not configured; skipping error notification', {}, { level: 'warn', severity: 'medium' });
+    try {
+      const recipientList = Array.isArray(to) ? to : [to];
+      const payload = {
+        from: `${this.fromName} <${this.fromEmail}>`,
+        to: recipientList,
+        subject,
+        html,
+      };
+      if (text) payload.text = text;
+
+      const result = await this.client.emails.send(payload);
+      logger.system('EMAIL_SENT_SUCCESS', 'Email dispatched via Resend', {
+        to: recipientList,
+        subject,
+        id: result?.id || result?.data?.id,
+      });
+      return { success: true, data: result };
+    } catch (error) {
+      logger.system('EMAIL_SEND_ERROR', 'Failed to dispatch email via Resend', {
+        to,
+        subject,
+        errorMessage: error?.message || String(error),
+      }, { level: 'error', severity: 'medium' });
+      return { success: false, error: error?.message };
+    }
+  }
+
+  /**
+   * Send Password Reset Link / Code to Customer
+   */
+  async sendPasswordResetEmail(email, resetUrl, context = {}) {
+    const customerName = context.name || 'Valued Customer';
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Reset Your TipTop Password</title>
+      </head>
+      <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #F6F5F2; padding: 24px; margin: 0;">
+        <div style="max-width: 560px; margin: 0 auto; background-color: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.06); border: 1px solid #eae6df;">
+          <div style="background: linear-gradient(135deg, #D8271E 0%, #a71812 100%); padding: 32px 24px; text-align: center;">
+            <h1 style="color: #ffffff; margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.5px;">Thé Tip Top</h1>
+            <p style="color: #F2C8B8; margin: 6px 0 0 0; font-size: 13px;">Delicious Food, Fast Delivery</p>
+          </div>
+          <div style="padding: 36px 32px; color: #1E1E1E;">
+            <h2 style="font-size: 20px; font-weight: 700; margin-top: 0; margin-bottom: 12px; color: #111;">Password Reset Request</h2>
+            <p style="font-size: 14px; line-height: 1.6; color: #555; margin-bottom: 24px;">
+              Hello ${customerName},<br />
+              We received a request to reset the password for your Tip Top account associated with <strong>${email}</strong>.
+            </p>
+            <div style="text-align: center; margin: 32px 0;">
+              <a href="${resetUrl}" style="display: inline-block; background-color: #D8271E; color: #ffffff; font-weight: 700; font-size: 14px; padding: 14px 32px; text-decoration: none; border-radius: 9999px; box-shadow: 0 4px 12px rgba(216, 39, 30, 0.25);">
+                Reset Password
+              </a>
+            </div>
+            <p style="font-size: 12px; line-height: 1.6; color: #777; margin-bottom: 8px;">
+              This link is valid for <strong>15 minutes</strong>. If you did not request a password reset, you can safely ignore this email — your account remains secure.
+            </p>
+            <p style="font-size: 11px; color: #999; word-break: break-all; margin-top: 16px;">
+              If the button above does not work, paste this URL into your browser:<br />
+              <a href="${resetUrl}" style="color: #D8271E;">${resetUrl}</a>
+            </p>
+          </div>
+          <div style="background-color: #faf8f5; padding: 20px 32px; text-align: center; border-top: 1px solid #eae6df; font-size: 12px; color: #999;">
+            &copy; ${new Date().getFullYear()} The Tip Top Restaurant • Law Gate, Phagwara, Punjab
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return this.sendEmail({
+      to: email,
+      subject: 'Reset your Thé Tip Top Password',
+      html,
+    });
+  }
+
+  /**
+   * Send Order Confirmation to Customer
+   */
+  async sendOrderConfirmationEmail(email, order, context = {}) {
+    const customerName = context.name || 'Valued Customer';
+    const itemsListHtml = (order.items || [])
+      .map(
+        (i) => `
+        <tr>
+          <td style="padding: 10px 0; border-bottom: 1px solid #eee; font-size: 13px; color: #333;">
+            ${i.name || i.menuItem?.name || 'Item'} ${i.quantity ? `× ${i.quantity}` : ''}
+          </td>
+          <td style="padding: 10px 0; border-bottom: 1px solid #eee; font-size: 13px; text-align: right; color: #111; font-weight: 600;">
+            ₹${i.price || 0}
+          </td>
+        </tr>
+      `
+      )
+      .join('');
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Order Confirmed - Thé Tip Top</title>
+      </head>
+      <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #F6F5F2; padding: 24px; margin: 0;">
+        <div style="max-width: 560px; margin: 0 auto; background-color: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.06); border: 1px solid #eae6df;">
+          <div style="background: linear-gradient(135deg, #D8271E 0%, #a71812 100%); padding: 32px 24px; text-align: center;">
+            <h1 style="color: #ffffff; margin: 0; font-size: 26px; font-weight: 800;">Order Received!</h1>
+            <p style="color: #F2C8B8; margin: 6px 0 0 0; font-size: 13px;">Order #${order.orderNumber || order._id}</p>
+          </div>
+          <div style="padding: 32px; color: #1E1E1E;">
+            <p style="font-size: 14px; color: #555; margin-top: 0;">
+              Thank you ${customerName}! Your order has been placed and is currently being prepared by our kitchen.
+            </p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin: 24px 0;">
+              <thead>
+                <tr>
+                  <th align="left" style="padding-bottom: 8px; border-bottom: 2px solid #D8271E; font-size: 12px; text-transform: uppercase; color: #D8271E;">Item</th>
+                  <th align="right" style="padding-bottom: 8px; border-bottom: 2px solid #D8271E; font-size: 12px; text-transform: uppercase; color: #D8271E;">Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${itemsListHtml}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td style="padding-top: 14px; font-size: 15px; font-weight: 800; color: #111;">Total Amount</td>
+                  <td style="padding-top: 14px; font-size: 15px; font-weight: 800; text-align: right; color: #D8271E;">₹${order.total || order.amount || 0}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div style="background-color: #faf8f5; padding: 20px 32px; text-align: center; border-top: 1px solid #eae6df; font-size: 12px; color: #999;">
+            &copy; ${new Date().getFullYear()} The Tip Top Restaurant • Law Gate, Phagwara, Punjab
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return this.sendEmail({
+      to: email,
+      subject: `Order #${order.orderNumber || order._id} Confirmed - Thé Tip Top`,
+      html,
+    });
+  }
+
+  /**
+   * Critical error notification for system alerts
+   */
+  async sendErrorNotification(error, context = {}) {
+    if (!this.enabled || !this.developerEmail) {
       return false;
     }
 
     try {
-      logger.system('EMAIL_SENDING_ERROR_NOTIFICATION', 'Sending critical error notification to developer');
-
       const errorDetails = {
         message: error.message || 'Unknown error',
         stack: error.stack || 'No stack trace',
@@ -75,157 +212,52 @@ class EmailService {
         ...context,
       };
 
-      const userInfo = context.user
-        ? `
-        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
-          <h3 style="margin: 0 0 10px 0; color: #333;">User Information</h3>
-          <p style="margin: 5px 0; color: #666; font-size: 14px;"><strong>Email:</strong> ${context.user.email || 'N/A'}</p>
-          <p style="margin: 5px 0; color: #666; font-size: 14px;"><strong>Role:</strong> ${context.user.role || 'N/A'}</p>
-          <p style="margin: 5px 0; color: #666; font-size: 14px;"><strong>ID:</strong> ${context.user._id || 'N/A'}</p>
-        </div>
-        `
-        : '';
-
-      const requestInfo = context.req
-        ? `
-        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
-          <h3 style="margin: 0 0 10px 0; color: #333;">Request Information</h3>
-          <p style="margin: 5px 0; color: #666; font-size: 14px;"><strong>Method:</strong> ${context.req.method || 'N/A'}</p>
-          <p style="margin: 5px 0; color: #666; font-size: 14px;"><strong>URL:</strong> ${context.req.url || 'N/A'}</p>
-          <p style="margin: 5px 0; color: #666; font-size: 14px;"><strong>IP:</strong> ${context.req.ip || 'N/A'}</p>
-        </div>
-        `
-        : '';
-
       const htmlContent = `
         <!DOCTYPE html>
         <html>
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Critical Error Alert</title>
-        </head>
-        <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f4f4f4;">
-          <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px;">
-            <tr>
-              <td align="center">
-                <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                  <tr>
-                    <td style="background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%); padding: 30px; text-align: center;">
-                      <h1 style="color: #ffffff; margin: 0; font-size: 28px;">🚨 Critical Error Alert</h1>
-                      <p style="color: #ffffff; margin: 10px 0 0 0; font-size: 14px;">Environment: ${errorDetails.environment.toUpperCase()}</p>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 40px 30px;">
-                      <div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 15px; margin-bottom: 20px;">
-                        <h2 style="margin: 0 0 10px 0; color: #dc2626; font-size: 20px;">${errorDetails.name}</h2>
-                        <p style="margin: 0; color: #991b1b; font-size: 14px;">${errorDetails.message}</p>
-                      </div>
-                      <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
-                        <p style="margin: 5px 0; color: #666; font-size: 14px;"><strong>Error Code:</strong> ${errorDetails.code}</p>
-                        <p style="margin: 5px 0; color: #666; font-size: 14px;"><strong>Timestamp:</strong> ${errorDetails.timestamp}</p>
-                      </div>
-                      <h3 style="margin: 20px 0 10px 0; color: #333;">Stack Trace</h3>
-                      <div style="background-color: #1f2937; color: #f3f4f6; padding: 15px; border-radius: 8px; overflow-x: auto; font-family: monospace; font-size: 12px; line-height: 1.5;">
-                        ${errorDetails.stack.replace(/\n/g, '<br>')}
-                      </div>
-                      ${userInfo}
-                      ${requestInfo}
-                      ${context.additionalInfo ? `
-                      <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
-                        <h3 style="margin: 0 0 10px 0; color: #333;">Additional Information</h3>
-                        <pre style="margin: 0; color: #666; font-size: 12px; white-space: pre-wrap;">${JSON.stringify(context.additionalInfo, null, 2)}</pre>
-                      </div>
-                      ` : ''}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="background-color: #f8f9fa; padding: 20px 30px; text-align: center; border-top: 1px solid #eeeeee;">
-                      <p style="color: #999999; font-size: 12px; margin: 0;">
-                        This is an automated alert from ThéTipTop error monitoring system.
-                      </p>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-          </table>
-        </body>
-        </html>
-      `;
-
-      const result = await this.client.emails.send({
-        from: `${this.fromName} <${this.fromEmail}>`,
-        to: [this.developerEmail],
-        subject: `🚨 Critical Error in ${errorDetails.environment.toUpperCase()} - ${errorDetails.name}`,
-        html: htmlContent,
-      });
-
-      logger.system('EMAIL_SENT', 'Error notification sent to developer', { to: this.developerEmail, id: result.id || result.data?.id || 'unknown' });
-      return true;
-    } catch (emailError) {
-      logger.system('EMAIL_SEND_FAILED', 'Failed to send error notification', { errorMessage: emailError?.message || String(emailError) }, { level: 'error', severity: 'high' });
-      return false;
-    }
-  }
-
-  /**
-   * Send session revocation OTP
-   */
-  async sendSessionRevocationOtp(email, otp, context = {}) {
-    if (!this.enabled) {
-      logger.system('EMAIL_SERVICE_DISABLED', 'Email service disabled; cannot send OTP', {}, { level: 'warn', severity: 'medium' });
-      return false;
-    }
-    
-    try {
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <title>Session Revocation OTP</title>
-        </head>
-        <body style="font-family: Arial, sans-serif; padding: 20px; line-height: 1.6; color: #333;">
-          <div style="max-width: 600px; margin: 0 auto; border: 1px solid #e1e4e8; border-radius: 12px; overflow: hidden;">
-            <div style="background-color: #3C50E0; padding: 30px; text-align: center;">
-              <h1 style="color: #ffffff; margin: 0; font-size: 24px;">Security Verification</h1>
-            </div>
-            <div style="padding: 30px;">
-              <p>Hello,</p>
-              <p>A request was made to revoke an active session from your account. Please use the following One-Time Password (OTP) to confirm this action:</p>
-              <div style="background-color: #f6f8fa; padding: 20px; font-size: 32px; font-weight: bold; text-align: center; border-radius: 8px; letter-spacing: 5px; color: #3C50E0; margin: 20px 0;">
-                ${otp}
-              </div>
-              <p><strong>This OTP is valid for 5 minutes.</strong></p>
-              <p>If you did not request this action, please ignore this email or contact support if you believe your account security is compromised.</p>
-              
-              <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e1e4e8;">
-                <p style="font-size: 13px; color: #666; margin: 5px 0;"><strong>Device info:</strong> ${context.userAgent || 'Unknown'}</p>
-                <p style="font-size: 13px; color: #666; margin: 5px 0;"><strong>IP Address:</strong> ${context.ipAddress || 'Unknown'}</p>
-              </div>
-            </div>
-            <div style="background-color: #f6f8fa; padding: 20px; text-align: center; color: #999; font-size: 12px;">
-              &copy; ${new Date().getFullYear()} ThéTipTop Restaurant. All rights reserved.
-            </div>
+        <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; padding: 30px;">
+            <h2 style="color: #dc2626; margin-top: 0;">🚨 Critical Server Alert (${errorDetails.environment.toUpperCase()})</h2>
+            <p><strong>Error:</strong> ${errorDetails.message}</p>
+            <p><strong>Code:</strong> ${errorDetails.code}</p>
+            <p><strong>Timestamp:</strong> ${errorDetails.timestamp}</p>
+            <h3>Stack:</h3>
+            <pre style="background: #1f2937; color: #fff; padding: 12px; border-radius: 6px; font-size: 12px; overflow-x: auto;">${errorDetails.stack}</pre>
           </div>
         </body>
         </html>
       `;
 
-      await this.client.emails.send({
-        from: `${this.fromName} <${this.fromEmail}>`,
-        to: [email],
-        subject: `Your Security OTP: ${otp}`,
+      return await this.sendEmail({
+        to: this.developerEmail,
+        subject: `🚨 Critical Error Alert: ${errorDetails.name}`,
         html: htmlContent,
       });
-
-      return true;
-    } catch (error) {
-      logger.error('Failed to send session revocation OTP', { errorMessage: error.message });
+    } catch {
       return false;
     }
+  }
+
+  /**
+   * Send Session Revocation OTP
+   */
+  async sendSessionRevocationOtp(email, otp, context = {}) {
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; border: 1px solid #eee; border-radius: 12px;">
+        <h2 style="color: #D8271E;">Security Verification OTP</h2>
+        <p>A request was made to revoke a session from your account. Use this OTP to confirm:</p>
+        <div style="font-size: 28px; font-weight: bold; letter-spacing: 4px; color: #D8271E; background: #fff5f5; padding: 16px; text-align: center; border-radius: 8px;">
+          ${otp}
+        </div>
+        <p style="font-size: 12px; color: #888; margin-top: 16px;">Valid for 5 minutes. If this wasn't you, please secure your account.</p>
+      </div>
+    `;
+
+    return this.sendEmail({
+      to: email,
+      subject: `Your Security OTP: ${otp}`,
+      html: htmlContent,
+    });
   }
 }
 

@@ -17,6 +17,7 @@ const {
   incrementTokenMismatch,
 } = require('../services/metrics.service');
 const sessionCache = require('../services/sessionCache');
+const emailService = require('../services/email.service');
 const { sweepCookies } = require('../utils/cookieUtils');
 
 const AUTH_VERSION = 'v2';
@@ -1229,7 +1230,21 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
     userId: user._id.toString(),
   });
 
-  // TODO: Send email with reset link
+  // Construct reset URL for frontend
+  const clientBase = (process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',')[0].trim() : 'http://localhost:5173');
+  const resetUrl = `${clientBase}/reset-password/${resetToken}`;
+
+  // Send email with reset link via Resend
+  const emailResult = await emailService.sendPasswordResetEmail(user.email.address, resetUrl, {
+    name: user.name?.first || user.name || 'Customer',
+  });
+
+  if (!emailResult.success) {
+    logger.auth('AUTH_PASSWORD_RESET_EMAIL_FAILED', 'Failed to dispatch password reset email', {
+      userId: user._id.toString(),
+      email: user.email.address,
+    }, { level: 'error', severity: 'medium' });
+  }
 
   res.status(200).json({
     status: 'success',
