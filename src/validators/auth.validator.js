@@ -310,6 +310,16 @@ exports.changePasswordSchema = Joi.object({
     }),
 });
 
+/**
+ * Validation schema for Customer Google login
+ */
+exports.googleLoginSchema = Joi.object({
+  credential: Joi.string().required().messages({
+    'string.empty': 'Google ID token (credential) is required',
+    'any.required': 'Google ID token (credential) is required',
+  }),
+});
+
 /** * Middleware to validate request body
  */
 exports.validate = schema => {

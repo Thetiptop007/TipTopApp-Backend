@@ -61,7 +61,9 @@ const userSchema = new mongoose.Schema(
     phone: {
       number: {
         type: String,
-        required: [true, 'Phone number is required'],
+        required: function () {
+          return !this.authProviders?.google?.id;
+        },
         trim: true,
       },
       isVerified: {
@@ -73,9 +75,24 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: [true, 'Password is required'],
+      required: function () {
+        return !this.authProviders?.google?.id;
+      },
       minlength: [8, 'Password must be at least 8 characters'],
       select: false,
+    },
+    // Federated Identity Providers (Decoupled auth layer)
+    authProviders: {
+      google: {
+        id: String,
+        email: {
+          type: String,
+          lowercase: true,
+          trim: true,
+        },
+        picture: String,
+        linkedAt: Date,
+      },
     },
     // Canonical role field - single source of truth for authorization
     role: {
@@ -320,7 +337,8 @@ const userSchema = new mongoose.Schema(
 
 // Indexes
 userSchema.index({ 'email.address': 1 }, { unique: true });
-userSchema.index({ 'phone.number': 1 }, { unique: true });
+userSchema.index({ 'phone.number': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'authProviders.google.id': 1 }, { sparse: true });
 userSchema.index({ role: 1, isActive: 1 });
 userSchema.index({ role: 1, isActive: 1, 'customerData.totalOrders': -1 });
 userSchema.index({ role: 1, isActive: 1, 'customerData.totalSpent': -1 });

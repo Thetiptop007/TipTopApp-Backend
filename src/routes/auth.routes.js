@@ -175,6 +175,14 @@ router.post(
 );
 
 router.post(
+  '/customer/google',
+  loginLimiter,
+  authBruteForceLimiter({ windowMs: 15 * 60 * 1000, maxAttempts: 15 }),
+  authValidator.validate(authValidator.googleLoginSchema),
+  authController.customerGoogleLogin
+);
+
+router.post(
   '/customer/refresh',
   validateSingleSessionScope('customer'),
   refreshLimiter,

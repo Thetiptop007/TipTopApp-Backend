@@ -33,19 +33,9 @@ const bulkStatusUpdateLimiter = rateLimit({
 });
 
 /* =====================================================
-   PUBLIC ORDER ROUTES (Guest Orders)
+   PUBLIC ORDER ROUTES (Disabled - Authentication Required)
 ===================================================== */
-
-// Guest order creation (no authentication) - Check if shop is open
-router.post(
-  '/guest/create',
-  guestOrderLimiter,
-  guestOrderCooldown,
-  checkGuestHoneypot,
-  checkShopOpen,
-  orderValidator.validate(orderValidator.createGuestOrderSchema),
-  orderController.createGuestOrder
-);
+// Guest checkout disabled: All orders must be placed by authenticated customers.
 
 /* =====================================================
    THERMAL PRINTER SERVICE ROUTES (No Auth Required)

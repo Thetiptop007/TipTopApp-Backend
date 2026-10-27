@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { promisify } = require('util');
+const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
@@ -590,6 +591,152 @@ exports.login = catchAsync(async (req, res, next) => {
   incrementLoginOutcome(scope, 'success');
 
   await createSendToken(user, 200, req, res, 'Login successful!');
+});
+
+/**
+ * Customer Google OAuth Login/Registration
+ * POST /api/v1/auth/customer/google
+ */
+exports.customerGoogleLogin = catchAsync(async (req, res, next) => {
+  const scope = 'customer';
+  const { credential } = req.body;
+
+  if (!credential) {
+    return next(new AppError('Google credential token is required.', 400));
+  }
+
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const client = new OAuth2Client(clientId);
+
+  let payload;
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken: credential,
+      audience: clientId ? [clientId] : undefined,
+    });
+    payload = ticket.getPayload();
+  } catch (verifyError) {
+    logger.auth('AUTH_GOOGLE_VERIFY_FAILED', 'Google ID token verification failed', {
+      error: verifyError.message,
+      ip: req.ip,
+    }, { severity: 'medium' });
+    logSecurityAudit(SECURITY_EVENTS.LOGIN_FAILURE, {
+      reason: 'invalid_google_token',
+      scope,
+      ip: req.ip,
+    }, { level: 'warn', severity: 'high' });
+    return next(new AppError('Google authentication failed: Invalid or expired token.', 401));
+  }
+
+  // Security check: Protect against unverified or fake accounts
+  if (!payload || !payload.email || payload.email_verified !== true) {
+    logger.auth('AUTH_GOOGLE_UNVERIFIED_EMAIL', 'Rejected unverified Google email', {
+      email: payload?.email,
+      ip: req.ip,
+    }, { severity: 'high' });
+    return next(new AppError('Google account email is not verified.', 403));
+  }
+
+  const googleId = payload.sub;
+  const googleEmail = payload.email.toLowerCase().trim();
+  const givenName = payload.given_name || payload.name?.split(' ')?.[0] || 'Customer';
+  const familyName = payload.family_name || payload.name?.split(' ')?.slice(1)?.join(' ') || '';
+  const picture = payload.picture;
+
+  // 1) Check if user exists by googleId OR by verified email address
+  let user = await User.findOne({
+    $or: [
+      { 'authProviders.google.id': googleId },
+      { 'email.address': googleEmail },
+    ],
+  }).select('+isActive +isBlocked');
+
+  if (user) {
+    // If user is not customer role, deny access
+    if (user.role !== 'customer') {
+      return next(new AppError('Access denied. Customer account required.', 403));
+    }
+
+    if (user.isBlocked) {
+      logSecurityAudit(SECURITY_EVENTS.LOGIN_FAILURE, {
+        userId: user._id.toString(),
+        reason: 'blocked_account',
+        scope,
+        ip: req.ip,
+      }, { level: 'warn', severity: 'high' });
+      return next(new AppError('Your account has been blocked. Please contact support.', 403));
+    }
+
+    // Link Google provider if not yet linked
+    let updated = false;
+    if (!user.authProviders?.google?.id) {
+      user.authProviders = user.authProviders || {};
+      user.authProviders.google = {
+        id: googleId,
+        email: googleEmail,
+        picture,
+        linkedAt: new Date(),
+      };
+      updated = true;
+    }
+
+    // Ensure email is verified
+    if (!user.email?.isVerified) {
+      if (!user.email) user.email = {};
+      user.email.isVerified = true;
+      updated = true;
+    }
+
+    // Update avatar if absent
+    if (!user.avatar && picture) {
+      user.avatar = picture;
+      updated = true;
+    }
+
+    if (updated) {
+      await user.save({ validateBeforeSave: false });
+    }
+
+    logger.auth('AUTH_GOOGLE_LOGIN_SUCCESS', 'Customer logged in with Google', {
+      userId: user._id.toString(),
+      email: googleEmail,
+    });
+    incrementLoginOutcome('customer', 'success');
+
+    return await createSendToken(user, 200, req, res, 'Login with Google successful!');
+  }
+
+  // 2) New Customer: Create TipTop Customer Record linked to Google Identity
+  const newUser = new User({
+    name: {
+      first: givenName,
+      last: familyName,
+    },
+    email: {
+      address: googleEmail,
+      isVerified: true,
+    },
+    avatar: picture,
+    role: 'customer',
+    authProviders: {
+      google: {
+        id: googleId,
+        email: googleEmail,
+        picture,
+        linkedAt: new Date(),
+      },
+    },
+  });
+
+  await newUser.save({ validateBeforeSave: false });
+
+  logger.auth('AUTH_GOOGLE_REGISTER_SUCCESS', 'Customer created via Google Sign-In', {
+    userId: newUser._id.toString(),
+    email: googleEmail,
+  });
+  incrementLoginOutcome('customer', 'success');
+
+  await createSendToken(newUser, 201, req, res, 'Welcome to TipTop!');
 });
 
 /**
