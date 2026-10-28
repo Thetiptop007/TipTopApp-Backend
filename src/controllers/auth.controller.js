@@ -149,13 +149,18 @@ const serializeAuthUser = (user) => {
     ? user.name
     : `${user.name?.first || ''} ${user.name?.last || ''}`.trim();
 
+  const isProfileComplete = Boolean(user.phone?.number && !user.phone.number.startsWith('deleted_'));
+
   return {
     id: user._id,
     _id: user._id,
     role: user.role,
     name: fullName,
     email: user.email?.address || null,
+    isEmailVerified: Boolean(user.email?.isVerified),
     phone: user.phone?.number || null,
+    isPhoneVerified: Boolean(user.phone?.isVerified),
+    isProfileComplete,
     isActive: user.isActive !== false,
   };
 };
@@ -169,13 +174,18 @@ const serializeMinimalAuthUser = (user) => {
     ? user.name
     : `${user.name?.first || ''} ${user.name?.last || ''}`.trim();
 
+  const isProfileComplete = Boolean(user.phone?.number && !user.phone.number.startsWith('deleted_'));
+
   return {
     id: user._id,
     _id: user._id,
     name: fullName,
     role: user.role,
     email: user.email?.address || null,
+    isEmailVerified: Boolean(user.email?.isVerified),
     phone: user.phone?.number || null,
+    isPhoneVerified: Boolean(user.phone?.isVerified),
+    isProfileComplete,
     isActive: user.isActive !== false,
   };
 };
@@ -490,14 +500,34 @@ exports.register = catchAsync(async (req, res, next) => {
     userData.preferences = preferences;
   }
 
-  const user = await User.create(userData);
+  // Generate email verification token if email is provided
+  let verificationToken = null;
+  if (userEmail && !userEmail.endsWith('@tiptop.app')) {
+    verificationToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = crypto.createHash('sha256').update(verificationToken).digest('hex');
+    userData.emailVerificationToken = hashedToken;
+    userData.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  }
 
-  await user.save({ validateBeforeSave: false });
+  const user = await User.create(userData);
 
   logger.auth('AUTH_REGISTRATION_SUCCESS', 'User registered successfully', {
     userId: user._id.toString(),
     userRole: user.role,
   });
+
+  // Asynchronously send verification email in background without blocking response
+  if (verificationToken && userEmail && !userEmail.endsWith('@tiptop.app')) {
+    const clientBase = (process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',')[0].trim() : 'http://localhost:5173');
+    const verificationUrl = `${clientBase}/verify-email/${verificationToken}`;
+    emailService.sendEmailVerificationEmail(userEmail, verificationUrl, {
+      name: firstName || 'Customer',
+    }).catch(err => {
+      logger.auth('AUTH_EMAIL_VERIFICATION_DISPATCH_FAILED', 'Failed to dispatch verification email', {
+        error: err.message,
+      }, { level: 'warn' });
+    });
+  }
 
   await createSendToken(user, 201, req, res, 'Account created successfully.');
 });
@@ -1314,6 +1344,11 @@ exports.changePassword = catchAsync(async (req, res, next) => {
     );
   }
 
+  // Security requirement: Ensure email is verified before allowing password change
+  if (req.user.email?.address && !req.user.email.address.endsWith('@tiptop.app') && !req.user.email.isVerified) {
+    return next(new AppError('Please verify your email address before changing your password.', 403));
+  }
+
   // Get user with password
   const user = await User.findById(req.user._id).select('+password');
 
@@ -1390,17 +1425,24 @@ exports.sendVerificationEmail = catchAsync(async (req, res, next) => {
   user.emailVerificationToken = hashedToken;
   await user.save({ validateBeforeSave: false });
 
-  // TODO: Send verification email
-  const verificationURL = `${req.protocol}://${req.get('host')}/api/v1/auth/verify-email/${verificationToken}`;
-  logger.auth('AUTH_VERIFICATION_URL_GENERATED', 'Email verification URL generated', { userId: user._id }, { level: 'debug' });
+  user.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
+  await user.save({ validateBeforeSave: false });
+
+  const clientBase = (process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',')[0].trim() : 'http://localhost:5173');
+  const verificationURL = `${clientBase}/verify-email/${verificationToken}`;
+
+  await emailService.sendEmailVerificationEmail(user.email.address, verificationURL, {
+    name: user.name?.first || 'Customer',
+  });
+
+  logger.auth('AUTH_VERIFICATION_EMAIL_DISPATCHED', 'Email verification sent', { userId: user._id });
 
   res.status(200).json({
     status: 'success',
-    message: 'Verification email sent!',
+    message: 'Verification email sent successfully!',
     data: {
       user: req.user,
     },
-    // Remove in production - only for development
     ...(process.env.NODE_ENV === 'development' && { verificationToken }),
   });
 });

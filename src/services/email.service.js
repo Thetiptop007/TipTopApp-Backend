@@ -124,6 +124,59 @@ class EmailService {
   }
 
   /**
+   * Send Email Verification Link
+   */
+  async sendEmailVerificationEmail(email, verificationUrl, context = {}) {
+    const customerName = context.name || 'Valued Customer';
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Verify your email - Thé Tip Top</title>
+      </head>
+      <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #F6F5F2; padding: 24px; margin: 0;">
+        <div style="max-width: 540px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.06); border: 1px solid #eae6df;">
+          <div style="background: linear-gradient(135deg, #D8271E 0%, #a71812 100%); padding: 32px 24px; text-align: center;">
+            <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">Thé Tip Top</h1>
+            <p style="color: #F2C8B8; margin: 6px 0 0 0; font-size: 13px;">Delicious Food, Fast Delivery</p>
+          </div>
+          <div style="padding: 36px 32px; color: #1E1E1E;">
+            <h2 style="font-size: 20px; font-weight: 700; margin-top: 0; margin-bottom: 12px; color: #111;">Verify Your Email Address</h2>
+            <p style="font-size: 14px; line-height: 1.6; color: #555; margin-bottom: 24px;">
+              Hello ${customerName},<br />
+              Thank you for signing up with Tip Top! Please verify your email address to unlock special promotional offers, coupons, and secure your account.
+            </p>
+            <div style="text-align: center; margin: 32px 0;">
+              <a href="${verificationUrl}" style="display: inline-block; background-color: #D8271E; color: #ffffff; font-weight: 700; font-size: 14px; padding: 14px 32px; text-decoration: none; border-radius: 9999px; box-shadow: 0 4px 12px rgba(216, 39, 30, 0.25);">
+                Verify Email
+              </a>
+            </div>
+            <p style="font-size: 12px; line-height: 1.6; color: #777; margin-bottom: 8px;">
+              This link is valid for <strong>24 hours</strong>. You can continue placing orders anytime; verification simply unlocks promotional discounts.
+            </p>
+            <p style="font-size: 11px; color: #999; word-break: break-all; margin-top: 16px;">
+              If the button does not work, copy and paste this link into your browser:<br />
+              <a href="${verificationUrl}" style="color: #D8271E;">${verificationUrl}</a>
+            </p>
+          </div>
+          <div style="background-color: #faf8f5; padding: 20px 32px; text-align: center; border-top: 1px solid #eae6df; font-size: 12px; color: #999;">
+            &copy; ${new Date().getFullYear()} The Tip Top Restaurant • Law Gate, Phagwara, Punjab
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return this.sendEmail({
+      to: email,
+      subject: 'Verify your Thé Tip Top Email Address',
+      html,
+    });
+  }
+
+  /**
    * Send Order Confirmation to Customer
    */
   async sendOrderConfirmationEmail(email, order, context = {}) {

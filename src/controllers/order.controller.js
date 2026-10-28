@@ -1823,8 +1823,15 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   const taxRate = settings.taxRate || 0;
   const taxAmount = (subtotal + deliveryCharges) * (taxRate / 100);
 
-  // TODO: Apply promo code if provided
-  const discountAmount = 0;
+  // Apply promo code if provided with email verification check
+  let discountAmount = 0;
+  if (promoCode) {
+    if (req.user.email?.address && !req.user.email.address.endsWith('@tiptop.app') && !req.user.email.isVerified) {
+      return next(
+        new AppError('Please verify your email address to unlock promotional discounts and promo codes.', 403)
+      );
+    }
+  }
 
   // Calculate final amount
   const finalAmount = subtotal + deliveryCharges + taxAmount - discountAmount;
