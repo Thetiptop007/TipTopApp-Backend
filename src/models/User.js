@@ -579,19 +579,14 @@ userSchema.methods.storeRefreshSession = async function (scope, refreshToken) {
 };
 
 userSchema.methods.revokeRefreshSession = async function (scope, sessionId = null) {
-  if (!this.authSessions || !this.authSessions[scope]) return;
-
-  const sessionsRaw = this.authSessions[scope];
-  const sessions = Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : []);
-
+  const updateQuery = {};
   if (sessionId) {
-    this.authSessions[scope] = sessions.filter(s => s.sessionId !== sessionId);
+    updateQuery.$pull = { [`authSessions.${scope}`]: { sessionId } };
   } else {
-    // If no sessionId, clear all (legacy behavior or full logout)
-    this.authSessions[scope] = [];
+    updateQuery.$set = { [`authSessions.${scope}`]: [] };
   }
 
-  await this.save({ validateBeforeSave: false });
+  await this.constructor.findByIdAndUpdate(this._id, updateQuery);
   invalidateAuthSessionCache(this._id, scope);
 };
 
