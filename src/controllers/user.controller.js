@@ -110,44 +110,22 @@ exports.updateUser = catchAsync(async (req, res, next) => {
 });
 
 /**
- * Delete user (soft delete)
+ * Delete user (hard delete from database)
  * DELETE /api/v1/users/:id
  * Admin only
  */
 exports.deleteUser = catchAsync(async (req, res, next) => {
-  const existingUser = await User.findById(req.params.id);
+  const user = await User.findByIdAndDelete(req.params.id);
 
-  if (!existingUser) {
+  if (!user) {
     return next(new AppError('User not found', 404));
   }
 
-  // Anonymize and release unique phone/email credentials so that the customer
-  // can re-register with their phone number or email if needed.
-  const timestamp = Date.now();
-  const updatePayload = {
-    isActive: false,
-    deletedAt: new Date(),
-  };
-
-  if (existingUser.phone?.number && !existingUser.phone.number.startsWith('deleted_')) {
-    updatePayload['phone.number'] = 'deleted_' + timestamp + '_' + existingUser.phone.number;
-  }
-
-  if (existingUser.email?.address && !existingUser.email.address.startsWith('deleted_')) {
-    updatePayload['email.address'] = 'deleted_' + timestamp + '_' + existingUser.email.address;
-  }
-
-  await User.findByIdAndUpdate(
-    req.params.id,
-    updatePayload,
-    { returnDocument: 'after' }
-  );
-
-  logger.info('User deactivated and credentials released: ' + (existingUser.email?.address || '') + ' by ' + (req.user?.email?.address || 'admin'));
+  logger.info(`User permanently deleted from database: ${user.email?.address || user.phone?.number} by ${req.user?.email?.address || 'admin'}`);
 
   res.status(200).json({
     status: 'success',
-    message: 'User deleted and credentials released successfully',
+    message: 'User permanently deleted from database',
   });
 });
 

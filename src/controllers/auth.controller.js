@@ -428,36 +428,20 @@ exports.register = catchAsync(async (req, res, next) => {
   // Generate email from phone if not provided
   const userEmail = email || `${phone.replace(/[^\d]/g, '')}@tiptop.app`;
 
-  // Check if an active user already exists with this email or phone
-  const existingUsers = await User.find({
+  // Check if user already exists
+  const existingUser = await User.findOne({
     $or: [{ 'email.address': userEmail }, { 'phone.number': phone }],
-  }).select('+isActive');
+  });
 
-  for (const existing of existingUsers) {
-    // If the account was soft-deleted (isActive: false), release its credentials so new registration succeeds
-    if (existing.isActive === false) {
-      const timestamp = Date.now();
-      const releasePayload = {};
-      if (existing.email?.address === userEmail) {
-        releasePayload['email.address'] = `deleted_${timestamp}_${existing.email.address}`;
-      }
-      if (existing.phone?.number === phone) {
-        releasePayload['phone.number'] = `deleted_${timestamp}_${existing.phone.number}`;
-      }
-      if (Object.keys(releasePayload).length > 0) {
-        await User.findByIdAndUpdate(existing._id, releasePayload);
-      }
-      continue;
-    }
-
-    if (existing.email?.address === userEmail && email) {
+  if (existingUser) {
+    if (existingUser.email?.address === userEmail && email) {
       logger.auth('AUTH_REGISTRATION_FAILED', 'Registration failed: email already registered', {
         email: userEmail,
       });
       return next(new AppError('Email is already registered.', 400));
     }
 
-    if (existing.phone?.number === phone) {
+    if (existingUser.phone?.number === phone) {
       logger.auth('AUTH_REGISTRATION_FAILED', 'Registration failed: phone already registered', {
         phone: phone.replace(/\d(?=\d{3})/g, '*'),
       });
