@@ -52,12 +52,26 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // Send error response to client
-  const message = err.message || 'Internal Server Error';
+  // Format friendly message for MongoDB duplicate key (E11000) errors
+  let statusCodeFinal = statusCode;
+  let clientMessage = err.message || 'Internal Server Error';
 
-  res.status(statusCode).json({
+  if (err.code === 11000 || (err.message && err.message.includes('E11000 duplicate key error'))) {
+    statusCodeFinal = 400;
+    const keyPattern = err.keyPattern || (err.keyValue ? Object.keys(err.keyValue) : []);
+    if (keyPattern.includes('phone.number') || (err.message && err.message.includes('phone.number'))) {
+      clientMessage = 'This phone number is already registered to another account. Please use a different phone number.';
+    } else if (keyPattern.includes('email.address') || (err.message && err.message.includes('email.address'))) {
+      clientMessage = 'This email address is already registered to another account. Please use a different email.';
+    } else {
+      clientMessage = 'This information is already in use by another account.';
+    }
+  }
+
+  res.status(statusCodeFinal).json({
     success: false,
-    message,
+    status: 'fail',
+    message: clientMessage,
     ...(process.env.NODE_ENV === 'development' && {
       error: {
         stack: err.stack,

@@ -1536,14 +1536,36 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     if (allowedFields.includes(key)) {
       // Transform email and phone to nested structure
       if (key === 'email') {
-        filteredBody['email.address'] = req.body[key];
+        filteredBody['email.address'] = req.body[key]?.trim()?.toLowerCase();
       } else if (key === 'phone') {
-        filteredBody['phone.number'] = req.body[key];
+        const cleanPhone = String(req.body[key] || '').replace(/[^\d]/g, '');
+        filteredBody['phone.number'] = cleanPhone.slice(-10);
       } else {
         filteredBody[key] = req.body[key];
       }
     }
   });
+
+  // Check if phone or email is already taken by another account
+  if (filteredBody['phone.number']) {
+    const existingPhoneUser = await User.findOne({
+      _id: { $ne: req.user._id },
+      'phone.number': filteredBody['phone.number'],
+    }).select('_id');
+    if (existingPhoneUser) {
+      return next(new AppError('This phone number is already registered to another account.', 400));
+    }
+  }
+
+  if (filteredBody['email.address']) {
+    const existingEmailUser = await User.findOne({
+      _id: { $ne: req.user._id },
+      'email.address': filteredBody['email.address'],
+    }).select('_id');
+    if (existingEmailUser) {
+      return next(new AppError('This email address is already registered to another account.', 400));
+    }
+  }
 
   if (process.env.NODE_ENV === 'development') {
     logger.auth('AUTH_PROFILE_UPDATE_FILTERED', 'Profile update filtered payload', {
