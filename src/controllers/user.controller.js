@@ -566,3 +566,85 @@ exports.removeFavoriteItem = catchAsync(async (req, res, next) => {
     message: 'Item removed from favorites'
   });
 });
+
+
+/**
+ * Bulk Block/Unblock users
+ * PATCH /api/v1/users/bulk/block
+ * Admin only
+ */
+exports.bulkToggleBlockUsers = catchAsync(async (req, res, next) => {
+  const { userIds, isBlocked, blockReason } = req.body;
+
+  if (!Array.isArray(userIds) || userIds.length === 0) {
+    return next(new AppError('Please provide an array of user IDs', 400));
+  }
+
+  // Prevent blocking admin accounts or current admin
+  const currentAdminId = req.user._id.toString();
+  const safeUserIds = userIds.filter((id) => id.toString() !== currentAdminId);
+
+  // Update users matching safe IDs who are NOT admin role
+  const result = await User.updateMany(
+    {
+      _id: { $in: safeUserIds },
+      role: { $ne: 'admin' },
+    },
+    {
+      $set: {
+        isBlocked,
+        blockReason: isBlocked ? (blockReason || 'Blocked by admin') : '',
+      },
+      $inc: { sessionVersion: isBlocked ? 1 : 0 },
+    }
+  );
+
+  logger.info(
+    `Bulk user ${isBlocked ? 'blocked' : 'unblocked'}: ${result.modifiedCount} users by ${req.user.email?.address || 'admin'}`
+  );
+
+  res.status(200).json({
+    status: 'success',
+    message: `Successfully ${isBlocked ? 'blocked' : 'unblocked'} ${result.modifiedCount} user(s)`,
+    data: {
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+      skippedCount: userIds.length - result.matchedCount,
+    },
+  });
+});
+
+/**
+ * Bulk Delete users (hard delete from database)
+ * POST /api/v1/users/bulk/delete
+ * Admin only
+ */
+exports.bulkDeleteUsers = catchAsync(async (req, res, next) => {
+  const { userIds } = req.body;
+
+  if (!Array.isArray(userIds) || userIds.length === 0) {
+    return next(new AppError('Please provide an array of user IDs', 400));
+  }
+
+  // Never allow deleting oneself or admin accounts
+  const currentAdminId = req.user._id.toString();
+  const safeUserIds = userIds.filter((id) => id.toString() !== currentAdminId);
+
+  const result = await User.deleteMany({
+    _id: { $in: safeUserIds },
+    role: { $ne: 'admin' },
+  });
+
+  logger.info(
+    `Bulk users deleted: ${result.deletedCount} users by ${req.user.email?.address || 'admin'}`
+  );
+
+  res.status(200).json({
+    status: 'success',
+    message: `Successfully deleted ${result.deletedCount} user(s)`,
+    data: {
+      deletedCount: result.deletedCount,
+      skippedCount: userIds.length - result.deletedCount,
+    },
+  });
+});

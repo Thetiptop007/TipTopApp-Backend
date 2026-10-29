@@ -14,7 +14,7 @@ class EmailService {
   constructor() {
     this.client = null;
     this.enabled = false;
-    this.fromEmail = process.env.FROM_EMAIL || 'onboarding@resend.dev';
+    this.fromEmail = process.env.FROM_EMAIL || 'noreply@thetiptop.in';
     this.fromName = process.env.FROM_NAME || 'ThéTipTop';
     this.developerEmail = process.env.DEVELOPER_EMAIL;
     this.initialize();
@@ -55,6 +55,16 @@ class EmailService {
       if (text) payload.text = text;
 
       const result = await this.client.emails.send(payload);
+
+      if (result?.error) {
+        logger.system('EMAIL_SEND_REJECTED', 'Resend rejected the email', {
+          to: recipientList,
+          subject,
+          error: result.error,
+        }, { level: 'error', severity: 'high' });
+        return { success: false, error: result.error.message };
+      }
+
       logger.system('EMAIL_SENT_SUCCESS', 'Email dispatched via Resend', {
         to: recipientList,
         subject,

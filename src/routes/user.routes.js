@@ -1,5 +1,6 @@
 const express = require('express');
 const userController = require('../controllers/user.controller');
+const userValidator = require('../validators/user.validator');
 const authMiddleware = require('../middlewares/auth');
 const logger = require('../utils/logger');
 
@@ -18,6 +19,20 @@ router.get('/stats/overview', userController.getUserStats);
 
 // Get users by role
 router.get('/role/:role', userController.getUsersByRole);
+
+// Bulk Block/Unblock users (placed before /:id routes to avoid route collision)
+router.patch(
+  '/bulk/block',
+  userValidator.validate(userValidator.bulkBlockUsersSchema),
+  userController.bulkToggleBlockUsers
+);
+
+// Bulk Delete users (placed before /:id routes to avoid route collision)
+router.post(
+  '/bulk/delete',
+  userValidator.validate(userValidator.bulkDeleteUsersSchema),
+  userController.bulkDeleteUsers
+);
 
 // Create new user
 router.post('/', userController.createUser);
