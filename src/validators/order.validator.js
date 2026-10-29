@@ -98,6 +98,7 @@ exports.createOrderSchema = Joi.object({
   }),
 
   promoCode: Joi.string().trim().uppercase(),
+  allowDuplicate: Joi.boolean().optional(),
 });
 
 /**

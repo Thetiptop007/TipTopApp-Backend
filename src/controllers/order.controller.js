@@ -1724,7 +1724,42 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     scheduledFor,
     specialInstructions,
     promoCode,
+    allowDuplicate,
   } = req.body;
+
+  // 5-Minute Duplicate Order Guard:
+  // If customer placed an identical order within the last 5 minutes and hasn't explicitly confirmed duplicate,
+  // return a 409 status asking for user confirmation.
+  if (!allowDuplicate && req.user?._id) {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const recentIdenticalOrder = await Order.findOne({
+      'customer.id': req.user._id,
+      createdAt: { $gte: fiveMinutesAgo },
+      status: { $nin: ['CANCELLED'] },
+      'items.0': { $exists: true },
+    }).sort({ createdAt: -1 });
+
+    if (recentIdenticalOrder) {
+      // Check if items match
+      const incomingIds = items.map(i => (i.menuItem || i.menuItemId).toString()).sort();
+      const recentIds = (recentIdenticalOrder.items || []).map(i => i.menuItem.toString()).sort();
+      const isIdentical = incomingIds.length === recentIds.length && incomingIds.every((id, idx) => id === recentIds[idx]);
+
+      if (isIdentical) {
+        const diffMinutes = Math.max(1, Math.round((Date.now() - new Date(recentIdenticalOrder.createdAt).getTime()) / 60000));
+        const orderDisplayNum = recentIdenticalOrder.orderNumber ? recentIdenticalOrder.orderNumber.replace(/^ORD-\d+-/, '') : '';
+        return res.status(409).json({
+          status: 'duplicate_warning',
+          message: `You placed order #${orderDisplayNum} ${diffMinutes} minute${diffMinutes > 1 ? 's' : ''} earlier with the same items. Do you want to place this order again?`,
+          data: {
+            previousOrderId: recentIdenticalOrder._id,
+            previousOrderNumber: recentIdenticalOrder.orderNumber,
+            diffMinutes,
+          }
+        });
+      }
+    }
+  }
 
   // Validate menu items exist and are available
   
