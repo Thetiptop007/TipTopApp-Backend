@@ -1928,6 +1928,44 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   // Update customer stats
   req.user.customerData.totalOrders += 1;
   req.user.customerData.totalSpent += finalAmount;
+
+  // Progressive profile completion:
+  // If user does not have a phone number in profile (e.g. registered via Google),
+  // automatically save the verified contact phone from this checkout into their account.
+  const cleanPhone = (contactPhone || '').replace(/[^\d]/g, '');
+  const currentPhone = req.user.phone?.number;
+  if (
+    (!currentPhone || currentPhone.startsWith('deleted_')) &&
+    cleanPhone &&
+    /^[6-9]\d{9}$/.test(cleanPhone)
+  ) {
+    try {
+      const existingUser = await User.findOne({
+        'phone.number': cleanPhone,
+        _id: { $ne: req.user._id },
+      });
+      if (!existingUser) {
+        req.user.phone = {
+          number: cleanPhone,
+          isVerified: false,
+        };
+        logger.business(
+          'USER_PHONE_AUTO_LINKED',
+          'Phone auto-linked to customer account during checkout',
+          { userId: req.user._id, phone: cleanPhone },
+          { level: 'info' }
+        );
+      } else {
+        logger.warn(
+          'Phone number from checkout already belongs to another account; skipped auto-linking to avoid collision',
+          { phone: cleanPhone, currentUserId: req.user._id }
+        );
+      }
+    } catch (phoneErr) {
+      logger.error('Failed to auto-link phone during checkout:', phoneErr.message);
+    }
+  }
+
   await req.user.save({ validateBeforeSave: false });
 
   logger.business('ORDER_CREATED', 'Order created by admin', { orderNumber: order.orderNumber, createdBy: req.user.email.address, totalAmount: finalAmount }, { level: 'info' });
