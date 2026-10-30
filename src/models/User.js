@@ -419,6 +419,10 @@ userSchema.set('toObject', { virtuals: true });
 
 // Compare password method
 userSchema.methods.comparePassword = async function (candidatePassword) {
+  // If user has no password set (e.g. Google-only sign-in account) or no candidatePassword supplied, return false safely
+  if (!this.password || !candidatePassword) {
+    return false;
+  }
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
