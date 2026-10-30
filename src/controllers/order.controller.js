@@ -1740,10 +1740,16 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     }).sort({ createdAt: -1 });
 
     if (recentIdenticalOrder) {
-      // Check if items match
-      const incomingIds = items.map(i => (i.menuItem || i.menuItemId).toString()).sort();
-      const recentIds = (recentIdenticalOrder.items || []).map(i => i.menuItem.toString()).sort();
-      const isIdentical = incomingIds.length === recentIds.length && incomingIds.every((id, idx) => id === recentIds[idx]);
+      // Check if items match - handle both menuItemId (saved in DB schema) and menuItem (from request)
+      const incomingIds = items
+        .map(i => String(i.menuItemId || i.menuItem || ''))
+        .filter(Boolean)
+        .sort();
+      const recentIds = (recentIdenticalOrder.items || [])
+        .map(i => String(i.menuItemId || i.menuItem || ''))
+        .filter(Boolean)
+        .sort();
+      const isIdentical = incomingIds.length > 0 && incomingIds.length === recentIds.length && incomingIds.every((id, idx) => id === recentIds[idx]);
 
       if (isIdentical) {
         const diffMinutes = Math.max(1, Math.round((Date.now() - new Date(recentIdenticalOrder.createdAt).getTime()) / 60000));
