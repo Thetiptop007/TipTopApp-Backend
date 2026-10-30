@@ -82,6 +82,8 @@ exports.createOrderSchema = Joi.object({
     'string.empty': 'Contact phone is required',
   }),
   
+  customerName: Joi.string().trim().allow('').optional(),
+  
   paymentDetails: Joi.object({
     transactionId: Joi.string(),
     gateway: Joi.string(),

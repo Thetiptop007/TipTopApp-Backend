@@ -13,6 +13,32 @@ const getTokenSubject = (decoded = {}) => decoded.sub || decoded.id || null;
 const getTokenSessionId = (decoded = {}) => decoded.sid || decoded.sessionId || null;
 const getScopeFromRole = (role) => (role === 'admin' ? 'admin' : role === 'customer' ? 'customer' : null);
 
+exports.optionalProtect = () => catchAsync(async (req, res, next) => {
+  let token;
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+    token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (!token) {
+    return next();
+  }
+
+  try {
+    const decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
+    const userId = getTokenSubject(decoded);
+    if (userId) {
+      const user = await User.findById(userId).select('+isActive +sessionVersion +passwordChangedAt');
+      if (user && user.isActive) {
+        req.user = user;
+      }
+    }
+  } catch (e) {
+    // Ignore invalid token for optional auth
+  }
+
+  next();
+});
+
 /**
  * Protect middleware - Verifies JWT token and authenticates user
  * Checks:

@@ -62,19 +62,19 @@ router.post('/:orderId/printed', checkPrinterService, orderController.markOrderA
    CUSTOMER ORDER ROUTES
 ===================================================== */
 
-// All routes below require authentication
-router.use(authMiddleware.protect());
-
-// Create new order (customer) - Check if shop is open
+// Create new order (customer or guest) - Check if shop is open
 router.post(
   '/',
-  authMiddleware.restrictTo('customer'),
+  authMiddleware.optionalProtect(),
   checkShopOpen,
   checkIdempotency(86400), // 24 hours
   deduplicateRequest(5), // 5 second window
   orderValidator.validate(orderValidator.createOrderSchema),
   orderController.createOrder
 );
+
+// All routes below require authentication
+router.use(authMiddleware.protect());
 
 // Get my orders (customer)
 router.get(

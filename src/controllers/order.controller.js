@@ -1721,6 +1721,7 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     paymentMethod,
     paymentDetails,
     contactPhone,
+    customerName,
     scheduledFor,
     specialInstructions,
     promoCode,
@@ -1728,16 +1729,24 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   } = req.body;
 
   // 5-Minute Duplicate Order Guard:
-  // If customer placed an identical order within the last 5 minutes and hasn't explicitly confirmed duplicate,
-  // return a 409 status asking for user confirmation.
-  if (!allowDuplicate && req.user?._id) {
+  // Check either authenticated user ID or contact phone for duplicates
+  const cleanPhone = (contactPhone || '').replace(/[^\d]/g, '');
+  if (!allowDuplicate && (req.user?._id || cleanPhone)) {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-    const recentIdenticalOrder = await Order.findOne({
-      'customer.id': req.user._id,
+    const query = {
       createdAt: { $gte: fiveMinutesAgo },
       status: { $nin: ['CANCELLED'] },
       'items.0': { $exists: true },
-    }).sort({ createdAt: -1 });
+    };
+    if (req.user?._id && cleanPhone) {
+      query.$or = [{ 'customer.id': req.user._id }, { 'customer.phone': cleanPhone }];
+    } else if (req.user?._id) {
+      query['customer.id'] = req.user._id;
+    } else {
+      query['customer.phone'] = cleanPhone;
+    }
+
+    const recentIdenticalOrder = await Order.findOne(query).sort({ createdAt: -1 });
 
     if (recentIdenticalOrder) {
       // Check if items match - handle both menuItemId (saved in DB schema) and menuItem (from request)
@@ -1897,13 +1906,20 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   const paymentStatus = paymentMethod === 'COD' ? 'PENDING' : 
                        paymentDetails?.transactionId ? 'PAID' : 'PENDING';
 
+  // Customer info (supporting guest orders)
+  const resolvedCustomerName = (customerName && customerName.trim()) 
+    ? customerName.trim() 
+    : (req.user ? `${req.user.name?.first || ''} ${req.user.name?.last || ''}`.trim() : 'Guest Customer');
+  const resolvedCustomerPhone = cleanPhone || req.user?.phone?.number || '';
+  const resolvedCustomerEmail = req.user?.email?.address || '';
+
   // Create order
   const order = await Order.create({
     customer: {
-      id: req.user._id,
-      name: `${req.user.name.first} ${req.user.name.last}`,
-      phone: contactPhone || req.user.phone.number,
-      email: req.user.email.address,
+      id: req.user?._id || null,
+      name: resolvedCustomerName,
+      phone: resolvedCustomerPhone,
+      email: resolvedCustomerEmail,
     },
     items: orderItems,
     pricing: {
@@ -1922,11 +1938,11 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     statusHistory: [{
       status: 'PENDING',
       timestamp: new Date(),
-      updatedBy: req.user._id,
+      updatedBy: req.user?._id || null,
       notes: 'Order placed',
     }],
     metadata: {
-      isFirstOrder: req.user.customerData.totalOrders === 0,
+      isFirstOrder: req.user ? req.user.customerData?.totalOrders === 0 : false,
       orderSource: 'mobile',
       deviceType: req.headers['user-agent'] || 'unknown',
     },
@@ -1935,7 +1951,7 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   logBusinessEvent(BUSINESS_EVENTS.ORDER_CREATED, {
     orderId: order._id.toString(),
     orderNumber: order.orderNumber,
-    placedBy: 'CUSTOMER',
+    placedBy: req.user ? 'CUSTOMER' : 'GUEST',
     paymentMethod: order.paymentMethod,
     paymentStatus: order.paymentStatus,
     amount: order.pricing?.finalAmount,
@@ -1966,61 +1982,67 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     );
   }
 
-  // Update customer stats
-  req.user.customerData.totalOrders += 1;
-  req.user.customerData.totalSpent += finalAmount;
-
-  // Progressive profile completion:
-  // If user does not have a phone number in profile (e.g. registered via Google),
-  // automatically save the verified contact phone from this checkout into their account.
-  const cleanPhone = (contactPhone || '').replace(/[^\d]/g, '');
-  const currentPhone = req.user.phone?.number;
-  if (
-    (!currentPhone || currentPhone.startsWith('deleted_')) &&
-    cleanPhone &&
-    /^[6-9]\d{9}$/.test(cleanPhone)
-  ) {
-    try {
-      const existingUser = await User.findOne({
-        'phone.number': cleanPhone,
-        _id: { $ne: req.user._id },
-      });
-      if (!existingUser) {
-        req.user.phone = {
-          number: cleanPhone,
-          isVerified: false,
-        };
-        logger.business(
-          'USER_PHONE_AUTO_LINKED',
-          'Phone auto-linked to customer account during checkout',
-          { userId: req.user._id, phone: cleanPhone },
-          { level: 'info' }
-        );
-      } else {
-        logger.warn(
-          'Phone number from checkout already belongs to another account; skipped auto-linking to avoid collision',
-          { phone: cleanPhone, currentUserId: req.user._id }
-        );
-      }
-    } catch (phoneErr) {
-      logger.error('Failed to auto-link phone during checkout:', phoneErr.message);
+  // Update customer stats if user is authenticated
+  if (req.user) {
+    if (!req.user.customerData) {
+      req.user.customerData = { totalOrders: 0, totalSpent: 0 };
     }
+    req.user.customerData.totalOrders = (req.user.customerData.totalOrders || 0) + 1;
+    req.user.customerData.totalSpent = (req.user.customerData.totalSpent || 0) + finalAmount;
+
+    // Progressive profile completion:
+    // If user does not have a phone number in profile (e.g. registered via Google),
+    // automatically save the verified contact phone from this checkout into their account.
+    const currentPhone = req.user.phone?.number;
+    if (
+      (!currentPhone || currentPhone.startsWith('deleted_')) &&
+      cleanPhone &&
+      /^[6-9]\d{9}$/.test(cleanPhone)
+    ) {
+      try {
+        const existingUser = await User.findOne({
+          'phone.number': cleanPhone,
+          _id: { $ne: req.user._id },
+        });
+        if (!existingUser) {
+          req.user.phone = {
+            number: cleanPhone,
+            isVerified: false,
+          };
+          logger.business(
+            'USER_PHONE_AUTO_LINKED',
+            'Phone auto-linked to customer account during checkout',
+            { userId: req.user._id, phone: cleanPhone },
+            { level: 'info' }
+          );
+        } else {
+          logger.warn(
+            'Phone number from checkout already belongs to another account; skipped auto-linking to avoid collision',
+            { phone: cleanPhone, currentUserId: req.user._id }
+          );
+        }
+      } catch (phoneErr) {
+        logger.error('Failed to auto-link phone during checkout:', phoneErr.message);
+      }
+    }
+
+    await req.user.save({ validateBeforeSave: false });
   }
 
-  await req.user.save({ validateBeforeSave: false });
-
-  logger.business('ORDER_CREATED', 'Order created by admin', { orderNumber: order.orderNumber, createdBy: req.user.email.address, totalAmount: finalAmount }, { level: 'info' });
+  logger.business('ORDER_CREATED', 'Order created', { orderNumber: order.orderNumber, createdBy: req.user ? req.user.email?.address : 'GUEST', totalAmount: finalAmount }, { level: 'info' });
 
   // Send notifications
-  try {
-    emitUserNotification(req.user._id.toString(), {
-      type: 'order_placed',
-      title: 'Order Placed Successfully',
-      message: `Your order ${order.orderNumber} has been placed successfully`,
-      orderId: order._id,
-    });
-  } catch (err) {
-    logger.error('Failed to emit customer notification:', err.message);
+  if (req.user?._id) {
+    try {
+      emitUserNotification(req.user._id.toString(), {
+        type: 'order_placed',
+        title: 'Order Placed Successfully',
+        message: `Your order ${order.orderNumber} has been placed successfully`,
+        orderId: order._id,
+      });
+    } catch (err) {
+      logger.error('Failed to emit customer notification:', err.message);
+    }
   }
 
   try {
@@ -2077,24 +2099,26 @@ exports.createOrder = catchAsync(async (req, res, next) => {
   }
 
   try {
-    const customerEmail = req.user.email.address;
-    await emailService.sendOrderConfirmation(customerEmail, {
-      orderNumber: order.orderNumber,
-      customer: {
-        name: `${req.user.name.first} ${req.user.name.last}`,
-        phone: req.user.phone,
-      },
-      items: orderItems.map(item => ({
-        name: item.name,
-        quantity: item.quantity,
-        price: item.price,
-        subtotal: item.subtotal,
-        portion: item.portion,
-      })),
-      pricing: order.pricing,
-      deliveryAddress: order.deliveryAddress,
-      estimatedDeliveryTime: order.estimatedDeliveryTime,
-    });
+    const customerEmail = resolvedCustomerEmail || req.user?.email?.address;
+    if (customerEmail) {
+      await emailService.sendOrderConfirmation(customerEmail, {
+        orderNumber: order.orderNumber,
+        customer: {
+          name: resolvedCustomerName,
+          phone: resolvedCustomerPhone,
+        },
+        items: orderItems.map(item => ({
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price,
+          subtotal: item.subtotal,
+          portion: item.portion,
+        })),
+        pricing: order.pricing,
+        deliveryAddress: order.deliveryAddress,
+        estimatedDeliveryTime: order.estimatedDeliveryTime,
+      });
+    }
   } catch (err) {
     logger.error('Failed to send order confirmation email:', err.message);
   }
