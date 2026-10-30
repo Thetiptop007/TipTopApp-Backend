@@ -1074,7 +1074,7 @@ exports.getSessions = catchAsync(async (req, res, next) => {
   const currentSessionId = req.auth?.sessionId;
   
   const sessionsRaw = req.user.authSessions?.[scope];
-  const sessionsList = Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : []);
+  const sessionsList = (Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : [])).filter(s => s && s.sessionId);
   
   const sessions = sessionsList.map(s => ({
     sessionId: s.sessionId,
@@ -1203,8 +1203,8 @@ exports.revokeAllOtherSessions = catchAsync(async (req, res, next) => {
   req.user.sessionRevocationOtpExpires = undefined;
   
   if (req.user.authSessions?.[scope]) {
-    req.user.authSessions[scope] = req.user.authSessions[scope].filter(
-      s => s.sessionId === currentSessionId || s.previousSessionId === currentSessionId
+    req.user.authSessions[scope] = (req.user.authSessions[scope] || []).filter(
+      s => s && (s.sessionId === currentSessionId || s.previousSessionId === currentSessionId)
     );
   }
   await req.user.save({ validateBeforeSave: false });

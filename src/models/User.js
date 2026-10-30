@@ -531,7 +531,7 @@ userSchema.methods.storeAuthSession = async function (scope, { accessToken, refr
   const expiresAt = new Date(Date.now() + parseDurationToMs(expiresIn, 7 * 24 * 60 * 60 * 1000));
 
   this.authSessions = this.authSessions || {};
-  this.authSessions[scope] = this.authSessions[scope] || [];
+  this.authSessions[scope] = (this.authSessions[scope] || []).filter(s => s && s.sessionId);
 
   const sessionData = {
     sessionId: nextSessionId,
@@ -596,14 +596,14 @@ userSchema.methods.revokeRefreshSession = async function (scope, sessionId = nul
 
 userSchema.methods.verifyAccessSession = async function (scope, { accessToken, sessionId } = {}) {
   const sessionsRaw = this.authSessions?.[scope];
-  const sessions = Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : []);
+  const sessions = (Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : [])).filter(s => s && s.sessionId);
   
   if (!accessToken || !sessionId) {
     return { valid: false, reason: 'missing_token_or_session_id' };
   }
 
   // Find the specific session
-  const session = sessions.find(s => s.sessionId === sessionId || s.previousSessionId === sessionId);
+  const session = sessions.find(s => s && (s.sessionId === sessionId || s.previousSessionId === sessionId));
   
   if (!session || !session.accessTokenHash) {
     return { valid: false, reason: 'session_not_found' };
@@ -651,13 +651,13 @@ userSchema.methods.verifyAccessSession = async function (scope, { accessToken, s
 
 userSchema.methods.verifyRefreshSession = async function (scope, refreshToken, sessionId = null) {
   const sessionsRaw = this.authSessions?.[scope];
-  const sessions = Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : []);
+  const sessions = (Array.isArray(sessionsRaw) ? sessionsRaw : (sessionsRaw && sessionsRaw.sessionId ? [sessionsRaw] : [])).filter(s => s && s.sessionId);
   
   if (!refreshToken) {
     return { valid: false, reason: 'missing_refresh_token' };
   }
 
-  const session = sessions.find(s => s.sessionId === sessionId || s.previousSessionId === sessionId);
+  const session = sessions.find(s => s && (s.sessionId === sessionId || s.previousSessionId === sessionId));
   
   if (!session || !session.refreshTokenHash) {
     return { valid: false, reason: 'session_not_found' };
