@@ -20,7 +20,7 @@
   },
   "scripts": {
     "dev": "cross-env NODE_ENV=development nodemon --exec \"node --input-type=commonjs\" server.js",
-    "start": "cross-env NODE_ENV=production node --input-type=commonjs server.js",
+    "start": "node --input-type=commonjs server.js",
     "test": "jest --coverage --detectOpenHandles",
     "test:watch": "jest --watch",
     "test:unit": "jest tests/unit",
