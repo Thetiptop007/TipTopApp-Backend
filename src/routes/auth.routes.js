@@ -238,4 +238,14 @@ mountSessionRoutes('customer');
 router.get('/verify-email/:token', authController.verifyEmail);
 router.post('/send-verification-email', authMiddleware.protect('customer'), authController.sendVerificationEmail);
 
+// Universal /me and /change-password compatibility endpoints
+router.get('/me', authMiddleware.protect(), authController.getMe);
+router.patch('/me', authMiddleware.protect(), authController.updateMe);
+router.patch(
+  '/change-password',
+  authMiddleware.protect(),
+  authValidator.validate(authValidator.changePasswordSchema),
+  authController.changePassword
+);
+
 module.exports = router;

@@ -8,6 +8,6 @@ const router = express.Router();
 router.post('/log', logFrontendError);
 
 // Protected route - test error notification (admin only)
-router.post('/test', protect, restrictTo('admin', 'superadmin'), testErrorNotification);
+router.post('/test', protect('admin'), restrictTo('admin', 'superadmin'), testErrorNotification);
 
 module.exports = router;

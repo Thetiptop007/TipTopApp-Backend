@@ -10,9 +10,24 @@ let io;
  * @param {http.Server} server - HTTP server instance
  */
 const initializeSocket = (server) => {
+  const envWhitelist = process.env.CLIENT_URL
+    ? process.env.CLIENT_URL.split(',').map(url => url.trim()).filter(Boolean)
+    : ['http://localhost:5173'];
+
   io = socketIo(server, {
     cors: {
-      origin: process.env.CLIENT_URL?.split(',') || ['http://localhost:5173'],
+      origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+        const isAllowed = envWhitelist.includes(origin) ||
+          envWhitelist.some(allowed => allowed.includes('*') && new RegExp('^' + allowed.replace(/\*/g, '.*') + '$').test(origin)) ||
+          origin.includes('vercel.app');
+
+        if (isAllowed) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
       credentials: true,
     },
     pingTimeout: 60000,

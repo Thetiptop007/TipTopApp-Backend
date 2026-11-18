@@ -7,5 +7,5 @@ exports.complete = catchAsync(async (req, res) => {
     return res.status(400).json({ success: false, message: 'prompt is required' });
   }
   const result = await completePrompt(prompt, system);
-  return res.status(200).json({ success: true, data: result });
+  return res.status(200).json({ status: 'success', success: true, data: result });
 });

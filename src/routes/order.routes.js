@@ -33,9 +33,17 @@ const bulkStatusUpdateLimiter = rateLimit({
 });
 
 /* =====================================================
-   PUBLIC ORDER ROUTES (Disabled - Authentication Required)
+   PUBLIC ORDER ROUTES
 ===================================================== */
-// Guest checkout disabled: All orders must be placed by authenticated customers.
+// Guest order checkout
+router.post(
+  '/guest/create',
+  checkShopOpen,
+  guestOrderLimiter,
+  guestOrderCooldown,
+  checkGuestHoneypot,
+  orderController.createGuestOrder
+);
 
 /* =====================================================
    THERMAL PRINTER SERVICE ROUTES (No Auth Required)
@@ -74,6 +82,24 @@ router.post(
   deduplicateRequest(5), // 5 second window
   orderValidator.validate(orderValidator.createOrderSchema),
   orderController.createOrder
+);
+
+// Alias for create order (/orders/create)
+router.post(
+  '/create',
+  authMiddleware.restrictTo('customer'),
+  checkShopOpen,
+  checkIdempotency(86400),
+  deduplicateRequest(5),
+  orderValidator.validate(orderValidator.createOrderSchema),
+  orderController.createOrder
+);
+
+// Get single order details (customer or admin)
+router.get(
+  '/:id',
+  authMiddleware.restrictTo('customer', 'admin'),
+  orderController.getOrderDetails
 );
 
 // Get my orders (customer)
